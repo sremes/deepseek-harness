@@ -3,9 +3,9 @@
  * bounded diagnostic evidence, under `$DSH_HOME/meta/meta.db` (or an
  * explicit `dbPath`, used by tests with `:memory:`).
  *
- * Backends reject old on-disk formats (repo stance) — `PRAGMA user_version`
- * must equal {@link META_SCHEMA_VERSION}; anything else throws instead of
- * migrating.
+ * Schema v1 holds sessions + evidence. Schema v2 adds the evaluator budget
+ * ledger; v1 databases migrate forward automatically (new tables only — no
+ * row rewrites). Anything else throws instead of migrating (repo stance).
  *
  * @module @deepseek-ai/dsh-session-meta/store
  */
@@ -13,10 +13,10 @@
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import type { MetaRoute, MetaSessionRow } from './types.ts'
+import type { EvaluatorLedgerRow, MetaRoute, MetaSessionRow } from './types.ts'
 
-/** On-disk schema version; mismatches throw (no migration). */
-export const META_SCHEMA_VERSION = 1
+/** On-disk schema version; v1 migrates to v2, anything else throws. */
+export const META_SCHEMA_VERSION = 2
 
 export interface MetaStoreOptions {
   /** Absolute database path, or `:memory:`. Parent directories are created. */
@@ -50,6 +50,14 @@ CREATE TABLE IF NOT EXISTS meta_evidence(
   severity TEXT NOT NULL,
   body TEXT NOT NULL,
   PRIMARY KEY(session_id, seq)
+);
+CREATE TABLE IF NOT EXISTS evaluator_ledger(
+  ts INTEGER NOT NULL,
+  session_id TEXT NOT NULL,
+  input_tokens INTEGER NOT NULL,
+  output_tokens INTEGER NOT NULL,
+  decision TEXT NOT NULL,
+  draft_slug TEXT
 );
 `
 
@@ -85,6 +93,9 @@ export class MetaStore {
     this.db.exec(SCHEMA_SQL)
     const version = this.db.prepare('PRAGMA user_version').get() as { user_version: number }
     if (version.user_version === 0) {
+      this.db.exec(`PRAGMA user_version = ${META_SCHEMA_VERSION}`)
+    } else if (version.user_version === 1) {
+      // v1 → v2 is additive only (evaluator_ledger, created above): stamp forward.
       this.db.exec(`PRAGMA user_version = ${META_SCHEMA_VERSION}`)
     } else if (version.user_version !== META_SCHEMA_VERSION) {
       const seen = version.user_version
@@ -171,6 +182,19 @@ export class MetaStore {
     }>
     for (const row of rows) histogram[row.route] = row.n
     return histogram
+  }
+
+  /** Record one evaluator attempt (call made, refused, or failed). */
+  recordEvaluation(row: EvaluatorLedgerRow): void {
+    this.db.prepare(
+      'INSERT INTO evaluator_ledger(ts, session_id, input_tokens, output_tokens, decision, draft_slug) VALUES(?, ?, ?, ?, ?, ?)',
+    ).run(row.ts, row.sessionId, row.inputTokens, row.outputTokens, row.decision, row.draftSlug)
+  }
+
+  /** Evaluator calls recorded at or after `sinceTs` (UTC millis). */
+  countEvaluationsSince(sinceTs: number): number {
+    const row = this.db.prepare('SELECT COUNT(*) AS n FROM evaluator_ledger WHERE ts >= ?').get(sinceTs) as { n: number }
+    return row.n
   }
 
   close(): void {

@@ -17,6 +17,13 @@
  */
 
 import type { MetaRoute, MetaTriage, SessionAggregate } from './types.ts'
+import { redactString } from './redact.ts'
+
+/** Tool steps retained per aggregate; beyond this the projection counts truncation. */
+export const MAX_TOOL_STEPS = 50
+
+/** Steering texts retained per aggregate; beyond this the oldest drops. */
+export const MAX_STEERING_TEXTS = 10
 
 /** Fresh aggregate for a session; evidence starts empty. */
 export function newAggregate(
@@ -40,6 +47,11 @@ export function newAggregate(
     turnEndReason: undefined,
     evidence: [],
     droppedEvidence: 0,
+    steeringTexts: [],
+    openingTask: undefined,
+    toolSteps: [],
+    truncatedToolSteps: 0,
+    pendingToolCalls: new Map(),
   }
 }
 
@@ -68,6 +80,35 @@ export function errorNameOf(error: unknown): string {
   return 'unknown-error'
 }
 
+/** Cap on retained human-message text per message (bounds the projection). */
+export const MAX_RETAINED_MESSAGE_CHARS = 2000
+
+/**
+ * Best-effort plain text of a message payload: joins `text` content blocks,
+ * falls back to a capped JSON dump. Never throws on odd shapes.
+ */
+export function messageText(data: unknown): string {
+  if (typeof data === 'object' && data !== null) {
+    const content = (data as { content?: unknown }).content
+    if (Array.isArray(content)) {
+      const text = content
+        .filter((block): block is { type: string; text: string } =>
+          typeof block === 'object' && block !== null &&
+          (block as { type?: unknown }).type === 'text' &&
+          typeof (block as { text?: unknown }).text === 'string')
+        .map(block => block.text)
+        .join('\n')
+      if (text !== '') return text.slice(0, MAX_RETAINED_MESSAGE_CHARS)
+    }
+  }
+  try {
+    const dumped: unknown = JSON.stringify(data)
+    return typeof dumped === 'string' ? dumped.slice(0, MAX_RETAINED_MESSAGE_CHARS) : ''
+  } catch {
+    return ''
+  }
+}
+
 /** Track-B class exception names (Plan-V1 §3.2 deterministic set). */
 const TRACK_B_ERROR_NAMES: ReadonlySet<string> = new Set([
   'SyntaxError',
@@ -84,6 +125,79 @@ function pushUnique(target: string[], name: string): void {
 /** Fold one tool-error name into the aggregate. */
 export function observeToolError(aggregate: SessionAggregate, name: string): void {
   pushUnique(aggregate.toolErrors, name)
+}
+
+/**
+ * Fold one `tool/call` payload: records the step outcome slot (optimistic
+ * ok) and maps its call id for the later result. Pure over the aggregate.
+ */
+export function observeToolCall(aggregate: SessionAggregate, data: unknown): void {
+  const fields = (typeof data === 'object' && data !== null ? data : {}) as {
+    name?: unknown
+    callId?: unknown
+  }
+  const tool = typeof fields.name === 'string' && fields.name !== '' ? fields.name : 'unknown-tool'
+  if (aggregate.toolSteps.length >= MAX_TOOL_STEPS) {
+    aggregate.truncatedToolSteps += 1
+    return
+  }
+  aggregate.toolSteps.push({ tool, ok: true })
+  if (typeof fields.callId === 'string' && fields.callId !== '') {
+    aggregate.pendingToolCalls.set(fields.callId, aggregate.toolSteps.length - 1)
+  }
+}
+
+/**
+ * Fold one errored `tool/result` payload: records the error name and marks
+ * the matching step failed. The call id rides top-level in synthetic
+ * payloads and inside `message` in live session events — both are honored.
+ * Results without a recorded call id still fold the error (attribution
+ * degrades, counting does not).
+ */
+export function observeToolResult(aggregate: SessionAggregate, data: unknown): void {
+  const fields = (typeof data === 'object' && data !== null ? data : {}) as {
+    callId?: unknown
+    error?: unknown
+    message?: unknown
+  }
+  const name = errorNameOf(fields.error)
+  observeToolError(aggregate, name)
+  const nested = (typeof fields.message === 'object' && fields.message !== null ? fields.message : {}) as {
+    callId?: unknown
+  }
+  const rawCallId = typeof fields.callId === 'string' ? fields.callId : nested.callId
+  const callId = typeof rawCallId === 'string' ? rawCallId : undefined
+  const index = callId === undefined ? undefined : aggregate.pendingToolCalls.get(callId)
+  if (index === undefined) return
+  const step = aggregate.toolSteps[index]
+  if (step !== undefined) {
+    step.ok = false
+    step.error = name
+  }
+}
+
+/**
+ * Fold one `user/message` payload: captures the opening task once, counts
+ * human steering, and retains redacted steering texts (bounded).
+ */
+export function observeUserMessage(aggregate: SessionAggregate, data: unknown, seenAssistant: boolean): void {
+  if (isHumanMessage(data) && aggregate.openingTask === undefined) {
+    aggregate.openingTask = redactString(messageText(data), { cwd: aggregate.cwd }).text
+  }
+  if (!isSteeringMessage(data, seenAssistant)) return
+  aggregate.steeringEvents += 1
+  aggregate.steeringTexts.push(redactString(messageText(data), { cwd: aggregate.cwd }).text)
+  if (aggregate.steeringTexts.length > MAX_STEERING_TEXTS) {
+    aggregate.steeringTexts.shift()
+  }
+}
+
+/** Whether the payload carries a human (`user`-kind) source marker. */
+function isHumanMessage(data: unknown): boolean {
+  if (typeof data !== 'object' || data === null) return false
+  const source = (data as { source?: unknown }).source
+  if (typeof source !== 'object' || source === null) return false
+  return (source as { kind?: unknown }).kind === 'user'
 }
 
 /** Fold one agent-error name into the aggregate. */

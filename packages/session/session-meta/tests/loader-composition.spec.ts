@@ -272,7 +272,9 @@ describe('MetaStore paths', () => {
           { seq: 1, type: 'tool/result', severity: 'error', body: '{}' },
         ],
       }
-      expect(() => store.writeSession(broken)).toThrow()
+      expect(() => {
+        store.writeSession(broken)
+      }).toThrow()
       expect(store.readSession('rb')).toBeUndefined()
     } finally {
       store.close()

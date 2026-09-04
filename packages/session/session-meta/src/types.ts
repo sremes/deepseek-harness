@@ -1,7 +1,9 @@
 /**
- * Shared types for the session-meta learning-loop input store: triage
- * routes, per-session aggregates, and persisted rows. Runtime code lives in
- * `redact.ts`, `triage.ts`, `store.ts`, and `index.ts`.
+ * Shared types for the session-meta learning loop: triage routes,
+ * per-session aggregates, persisted rows, steering records, state
+ * projections, evaluator proposals, and gated skill drafts. Runtime code
+ * lives in `redact.ts`, `triage.ts`, `store.ts`, `steering.ts`,
+ * `projection.ts`, `evaluator.ts`, `writer.ts`, and `index.ts`.
  *
  * @module @deepseek-ai/dsh-session-meta/types
  */
@@ -40,6 +42,23 @@ export interface SessionAggregate {
   evidence: MetaEvidence[]
   /** Events observed but deliberately not retained as evidence. */
   droppedEvidence: number
+  /** Redacted steering message texts (bounded; feeds the Track A evaluator). */
+  steeringTexts: string[]
+  /** Redacted first human message (the task goal); feeds the projection. */
+  openingTask?: string | undefined
+  /** Per-tool outcomes in call order (bounded; feeds the projection). */
+  toolSteps: ToolStep[]
+  /** Tool steps observed after the bound filled. */
+  truncatedToolSteps: number
+  /** Tool-call ids still awaiting their result, mapped to step indexes. */
+  pendingToolCalls: Map<string, number>
+}
+
+/** One folded tool-call outcome. */
+export interface ToolStep {
+  readonly tool: string
+  ok: boolean
+  error?: string | undefined
 }
 
 /** One retained diagnostic evidence row. */
@@ -69,4 +88,74 @@ export interface MetaSessionRow {
   readonly route: MetaRoute
   readonly reasons: string
   readonly droppedEvidence: number
+}
+
+/**
+ * Orchestrator-written correction record
+ * (`$DSH_HOME/meta/steering/<session-id>.json`, Plan-V1 §3.3): the headless
+ * steering source. Interactive sessions steer through in-session
+ * user/messages instead; both normalize to the same evaluator input.
+ */
+export interface SteeringRecord {
+  readonly sessionId: string
+  readonly originalTask: string
+  readonly correction: string
+  readonly intentHint?: string | undefined
+  readonly verifiedBy?: string | undefined
+}
+
+/** One tool step in a state projection. */
+export interface ProjectionStep {
+  readonly tool: string
+  readonly ok: boolean
+  readonly error?: string | undefined
+}
+
+/**
+ * Structured state projection Σ (Plan-V1 §3.3, SKILL.state note): what was
+ * done, what changed, what failed — per session, never a global schema.
+ * The evaluator sees this plus the steering record, never raw history.
+ */
+export interface SessionProjection {
+  readonly sessionId: string
+  readonly goal: string
+  readonly steps: readonly ProjectionStep[]
+  readonly truncatedSteps: number
+  readonly errors: readonly string[]
+  readonly turnEnd: string | null
+  readonly steeringTexts: readonly string[]
+  readonly counts: {
+    readonly events: number
+    readonly toolCalls: number
+    readonly assistantMessages: number
+  }
+}
+
+/**
+ * Schema-validated evaluator proposal (Plan-V1 §3.3): the model's output is
+ * proposal-only; the writer and (in M3) the L0–L4 pipeline decide.
+ */
+export interface EvaluatorProposal {
+  readonly intent: string
+  readonly forbidden: readonly string[]
+  readonly prescribed: readonly string[]
+  readonly triggerSignature: string
+  readonly platform: string
+}
+
+/** A written pipeline-gated skill draft. */
+export interface SkillDraft {
+  readonly slug: string
+  readonly dir: string
+  readonly file: string
+}
+
+/** One row of the evaluator budget ledger. */
+export interface EvaluatorLedgerRow {
+  readonly ts: number
+  readonly sessionId: string
+  readonly inputTokens: number
+  readonly outputTokens: number
+  readonly decision: string
+  readonly draftSlug: string | null
 }

@@ -23,10 +23,13 @@ import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-command-feedback'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
-import type { SessionAggregate } from './types.ts'
-import { errorNameOf, isSteeringMessage, newAggregate, observeAgentError, observeToolError, triage } from './triage.ts'
+import type { MetaRoute, SessionAggregate } from './types.ts'
+import { errorNameOf, isSteeringMessage, newAggregate, observeAgentError, observeToolCall, observeToolResult, observeUserMessage, triage } from './triage.ts'
 import { redactString, redactValue } from './redact.ts'
 import { MetaStore } from './store.ts'
+import type { EvaluatorLlm } from './evaluator.ts'
+import type { EvaluationConfig } from './orchestrate.ts'
+import { evaluateTrackASession, hasSteeringFile } from './orchestrate.ts'
 
 export type * from './types.ts'
 
@@ -39,7 +42,7 @@ export const name = 'session-meta'
  */
 export const inject: readonly string[] = []
 
-/** Plugin config: storage location and evidence bounds. */
+/** Plugin config: storage location, evidence bounds, and the Track A loop. */
 export interface Config {
   /** Explicit harness home; omitted follows `DSH_HOME`, then `~/.dsh`. */
   dshHome?: string
@@ -47,18 +50,126 @@ export interface Config {
   dbPath?: string
   /** Evidence rows kept per session; oldest drop first. Defaults to 200. */
   maxEvidencePerSession?: number
+  /** Skill-draft root override; defaults to `$DSH_HOME/skills`. */
+  skillsDir?: string
+  /** Track A evaluator (M2): disabled unless explicitly enabled with a route. */
+  evaluator?: EvaluatorInputConfig
+}
+
+/** Raw evaluator knobs; validated fail-closed in `apply` (see `resolveEvaluation`). */
+export interface EvaluatorInputConfig {
+  enabled?: boolean
+  provider?: string
+  model?: string
+  maxInputBytes?: number
+  maxOutputTokens?: number
+  timeoutMs?: number
+  maxCallsPerDay?: number
 }
 
 export const Config: z<Config> = z.object({
   dshHome: z.string(),
   dbPath: z.string().default(''),
   maxEvidencePerSession: z.number().step(1).min(1).default(200),
+  skillsDir: z.string().default(''),
+  evaluator: z.any(),
 })
 
 interface Tracker {
   readonly aggregates: Map<string, SessionAggregate>
   readonly store: MetaStore
   readonly maxEvidence: number
+  readonly home: string
+  readonly evaluation: EvaluationConfig
+}
+
+/**
+ * Every Track A evaluation in flight, across all mounted contexts.
+ * Keyed globally (not by context) because `apply` receives the plugin
+ * fiber's forked context while callers hold the root — identity lookup
+ * across that fork is unreliable, and production never settles.
+ */
+const pendingEvaluations = new Set<Promise<unknown>>()
+
+/**
+ * Await every queued Track A evaluation. Test and maintenance seam;
+ * production never calls it (flush stays non-blocking).
+ */
+export async function settleSessionMeta(): Promise<void> {
+  while (pendingEvaluations.size > 0) {
+    await Promise.all([...pendingEvaluations])
+  }
+}
+
+/** Defaults for the Track A evaluator knobs. */
+const EVALUATOR_DEFAULTS = {
+  maxInputBytes: 12000,
+  maxOutputTokens: 2000,
+  timeoutMs: 120000,
+  maxCallsPerDay: 1,
+} as const
+
+/**
+ * Validate the raw evaluator knobs fail-closed: enabled requires an
+ * explicit provider + model route; every limit falls back to its default.
+ * Pure: unit-covered without a context.
+ */
+export function resolveEvaluation(config: Config, home: string): EvaluationConfig {
+  const raw = config.evaluator ?? {}
+  const enabled = raw.enabled ?? false
+  const provider = raw.provider ?? ''
+  const model = raw.model ?? ''
+  if (enabled && (provider === '' || model === '')) {
+    throw new Error('session-meta: evaluator.enabled requires explicit evaluator.provider and evaluator.model')
+  }
+  return {
+    enabled,
+    provider,
+    model,
+    maxInputBytes: raw.maxInputBytes ?? EVALUATOR_DEFAULTS.maxInputBytes,
+    maxOutputTokens: raw.maxOutputTokens ?? EVALUATOR_DEFAULTS.maxOutputTokens,
+    timeoutMs: raw.timeoutMs ?? EVALUATOR_DEFAULTS.timeoutMs,
+    maxCallsPerDay: raw.maxCallsPerDay ?? EVALUATOR_DEFAULTS.maxCallsPerDay,
+    skillsDir: config.skillsDir === undefined || config.skillsDir === '' ? join(home, 'skills') : config.skillsDir,
+  }
+}
+
+/** Narrow `ctx.get('llm')` to the evaluator's structural surface. Test seam: unit-covered directly. */
+export function optionalLlm(ctx: Context): EvaluatorLlm | undefined {
+  const llm = ctx.get('llm') as EvaluatorLlm | null | undefined
+  if (llm === null || llm === undefined || typeof llm.stream !== 'function') return undefined
+  return llm
+}
+
+/**
+ * Whether a finalized session should run the Track A evaluator. Pure:
+ * unit-covered without a context (every combination is a row in the spec).
+ */
+export function shouldEvaluateTrackA(route: MetaRoute, enabled: boolean, hasSteering: boolean): boolean {
+  return route === 'track_a' && enabled && hasSteering
+}
+
+/** Queue one Track A evaluation without blocking flush/dispose. */
+function queueEvaluation(tracker: Tracker, ctx: Context, aggregate: SessionAggregate): void {
+  const run = evaluateTrackASession(
+    {
+      store: tracker.store,
+      home: tracker.home,
+      llm: optionalLlm(ctx),
+      now: () => Date.now(),
+      log: (message: string) => {
+        ctx.logger.info(message)
+      },
+    },
+    tracker.evaluation,
+    aggregate,
+  ).catch((error: unknown) => {
+    ctx.logger.warn(`session-meta: evaluation containment failed: ${String(error)}`)
+  })
+  pendingEvaluations.add(run)
+  void run.finally(() => {
+    pendingEvaluations.delete(run)
+  })
 }
 
 function ensureAggregate(tracker: Tracker, session: Session): SessionAggregate {
@@ -100,19 +211,19 @@ function observeEvent(tracker: Tracker, session: Session, event: SessionEvent): 
     }
     case 'tool/call': {
       aggregate.toolCalls += 1
+      observeToolCall(aggregate, event.data)
       break
     }
     case 'tool/result': {
       if (event.data.error !== undefined) {
-        const name = errorNameOf(event.data.error)
-        observeToolError(aggregate, name)
+        observeToolResult(aggregate, event.data)
         retainEvidence(tracker, aggregate, Number(event.seq), event.type, 'error', event.data)
       }
       break
     }
     case 'user/message': {
+      observeUserMessage(aggregate, event.data, aggregate.assistantMessages > 0)
       if (isSteeringMessage(event.data, aggregate.assistantMessages > 0)) {
-        aggregate.steeringEvents += 1
         retainEvidence(tracker, aggregate, Number(event.seq), event.type, 'info', event.data)
       }
       break
@@ -157,6 +268,15 @@ function finalizeSession(tracker: Tracker, session: Session, ctx: Context): void
   })
   const scrubbed = redactString(aggregate.sessionId, {})
   ctx.logger.info(`session-meta: session ${scrubbed.text} -> ${verdict.route} (${verdict.reasons.join(', ')})`)
+  if (
+    shouldEvaluateTrackA(
+      verdict.route,
+      tracker.evaluation.enabled,
+      aggregate.steeringTexts.length > 0 || hasSteeringFile(tracker.home, aggregate.sessionId),
+    )
+  ) {
+    queueEvaluation(tracker, ctx, aggregate)
+  }
 }
 
 /**
@@ -165,7 +285,7 @@ function finalizeSession(tracker: Tracker, session: Session, ctx: Context): void
  * tap and closes the store.
  *
  * @param ctx - plugin context owning the listeners and the store lifetime.
- * @param config - storage location and evidence bounds.
+ * @param config - storage location, evidence bounds, and the Track A loop.
  */
 export function apply(ctx: Context, config: Config): void {
   const home = resolveDshHome(config.dshHome)
@@ -176,6 +296,8 @@ export function apply(ctx: Context, config: Config): void {
     store,
     /* v8 ignore next -- schemastery fills the 200 default during validation, so the fallback is unreachable post-validation. */
     maxEvidence: config.maxEvidencePerSession ?? 200,
+    home,
+    evaluation: resolveEvaluation(config, home),
   }
   ctx.effect(() => () => {
     store.close()
