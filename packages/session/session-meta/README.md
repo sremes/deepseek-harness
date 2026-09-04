@@ -1,0 +1,155 @@
+---
+description: "Redacted per-session aggregates, deterministic triage, and a SQLite meta store: the learning-loop input side for operators composing or debugging dsh-meta."
+kind: "package-reference"
+---
+
+# @deepseek-ai/dsh-session-meta
+
+English | [中文](README.zh.md)
+
+## Summary
+
+`dsh-session-meta` is the observe-only input side of the dsh-meta learning
+loop (Plan-V1 M1). It taps the session firehose (`session/event`,
+`session/flush`, `session/disposed`, `agent/error` — the telemetry
+coordinator's capture pattern), scrubs secrets, folds one aggregate per
+session, routes it deterministically (`track_a` / `track_b` / `no_op`), and
+persists the row plus bounded evidence into `$DSH_HOME/meta/meta.db`. It
+writes nothing to skills and mutates no loop state; promotion lives in M3.
+
+## Table of Contents
+
+- [Use this package](#use-this-package)
+- [Understand the implementation](#understand-the-implementation)
+- [Further Exploration](#further-exploration)
+- [Model Experience](#model-experience)
+- [Known Limitations and Deferred Work](#known-limitations-and-deferred-work)
+- [Dev Note](#dev-note)
+
+-----
+
+<a id="use-this-package"></a>
+## Use this package
+
+Mount the plugin beside the session store in any profile whose sessions
+should feed the learning loop. No other plugin is required — the tap reads
+the event bus directly, so it works with any telemetry backend, or none.
+
+### Composition
+
+```yaml
+- name: '@deepseek-ai/dsh-session'
+- name: '@deepseek-ai/dsh-session-meta'
+  config:
+    dshHome: !!js process.env.DSH_HOME
+```
+
+For a one-off smoke run without touching a real home, pass an explicit
+`dbPath` (tests use `:memory:`):
+
+```yaml
+- name: '@deepseek-ai/dsh-session-meta'
+  config:
+    dshHome: '/tmp/meta-smoke'
+    dbPath: ':memory:'
+```
+
+### Config
+
+| Field | Meaning |
+|---|---|
+| `dshHome` | Harness home. Required by the schema; the launcher supplies `process.env.DSH_HOME`. |
+| `dbPath` | Absolute database path. Empty (default) resolves to `$DSH_HOME/meta/meta.db`. |
+| `maxEvidencePerSession` | Evidence rows retained per session (errors + steering only). Default 200; overflow counts into `dropped_evidence`. |
+
+### What the rows mean
+
+`meta_sessions` holds one row per finalized session: identity (`id`, `cwd`,
+`parent_session`, `origin`), counters (`events`, `tool_calls`,
+`steering_events`, `feedback_events`, `assistant_messages`), JSON-encoded
+`tool_errors` / `agent_errors` name lists, the last `turn_end_reason`, and the
+triage verdict (`route`, `reasons`). `meta_evidence` holds up to
+`maxEvidencePerSession` redacted diagnostic rows per session.
+
+The M1 report primitive is SQL:
+
+```sql
+SELECT route, COUNT(*) FROM meta_sessions GROUP BY route;
+```
+
+### Triage routes
+
+| Route | Trigger |
+|---|---|
+| `track_b` | Structural error (`SyntaxError`, `JSONParseError`, `ZodError`, `ERR_REGEX_TIMEOUT`, `ERR_TOOL_SCHEMA_VIOLATION`), any `agent/error`, any other tool error, or a non-`completed` turn end. |
+| `track_a` | Human steering: a `user`-kind `user/message` arriving after the first assistant message (the opening prompt is a task, not a correction). |
+| `no_op` | Neither signal. |
+
+Inbox events whose message source is not human (`agent-message` relays, tool
+frames, plugin notices) are never steering.
+
+<a id="understand-the-implementation"></a>
+## Understand the implementation
+
+Synchronous handlers only aggregate and buffer. SQLite writes happen on
+`session/flush` and `session/disposed`, never on the event hot path. The
+canonical session log is never rewritten — redaction applies to the meta
+copy only (PEM blocks, known token prefixes, `key=value` secrets, `cwd` →
+`$CWD`, home → `~`, per-string/array/depth bounds). On-disk schema is
+versioned (`PRAGMA user_version = 1`); mismatches throw instead of migrating.
+
+<details>
+<summary>Developer section: module map</summary>
+
+- `src/index.ts` — function plugin (`name`/`inject`/`Config`/`apply`, no default export): firehose tap, flush/dispose finalizers, store lifetime.
+- `src/triage.ts` — pure deterministic router over `SessionAggregate`; every branch unit-tested without cordis.
+- `src/redact.ts` — secret scrubbing and bounds.
+- `src/store.ts` — `node:sqlite` meta store (`MetaStore`, `META_SCHEMA_VERSION`).
+- `src/types.ts` — types only.
+
+</details>
+
+<a id="further-exploration"></a>
+## Further Exploration
+
+- Plan-V1 (SilverBullet `Projects/Self-Improving-Harness/Plan-V1`, outside this repo) — the in-repo contract is this README plus the test suite.
+- Telemetry capture pattern: `../session-telemetry/src/coordinator.ts`.
+- Skill frontmatter gate the loop will write through in M3: `../../skill/skill-filesystem/src/index.ts` (`disable-model-invocation`, `metadata:`).
+
+<a id="model-experience"></a>
+## Model Experience
+
+### Request context and condition
+
+#### What the model sees
+
+Indirectly, through skills the M3 loop will write. This package contributes
+no system-prompt sections, no tools, and no per-step context of its own.
+
+#### Token effect
+
+Zero-direct token effect.
+
+#### KV Cache effect
+
+Independent behavior. The plugin never mutates request context, tool
+schemas, or system-prompt sections, so it cannot invalidate prefix reuse.
+Provider cache availability and eviction remain outside the package contract.
+
+<a id="known-limitations-and-deferred-work"></a>
+## Known Limitations and Deferred Work
+
+- **No query service yet** — the M1 report surface is raw SQL against `meta.db`; a `ctx.meta` query API is deferred to M2.
+- **Steering heuristic is narrow** — only post-first-assistant human messages count; orchestrator correction records (headless mode) are not ingested yet (M2).
+- **Feedback sentiment is unparsed** — `feedback/record` events count as engagement; Like/Dislike polarity comes in M2 via `message-feedback`.
+- **No generic high-entropy secret detection** — secrets without a key anchor or known prefix pass through; hashes and ids in tool arguments are preserved deliberately.
+- **Evidence is lossy by design** — only errors and steering are retained, capped per session; full-trace replay stays in the canonical session log.
+
+<a id="dev-note"></a>
+## Dev Note
+
+Coverage expectation is per-file 100%: `tests/redact.spec.ts` and
+`tests/triage.spec.ts` pin every branch of the pure modules, and
+`tests/loader-composition.spec.ts` boots the shipped YAML shape through the
+vendored Loader and asserts durable rows (routes, redaction, evidence cap,
+histogram) plus the no-default-export pin.

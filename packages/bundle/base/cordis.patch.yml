@@ -165,6 +165,16 @@
         writeEveryEvents: 200
         writeIntervalMs: 5000
 
+    # Learning-loop input store (dsh-meta M1): taps the session firehose,
+    # redacts secrets, folds per-session aggregates, routes them with a
+    # deterministic triage, and writes one row per finished session into
+    # $DSH_HOME/meta/meta.db. Read-only input side: it never writes skills,
+    # never calls the model, and never touches the canonical session log.
+    - id: session-meta
+      name: '@deepseek-ai/dsh-session-meta'
+      config:
+        dshHome: !!js dshHomePath()
+
     # Session telemetry defaults to feedback-gated sharing: FEEDBACK_ONLY
     # uploads only when the user records /feedback, releasing the session
     # records since the last handoff through that event (a resumed session
