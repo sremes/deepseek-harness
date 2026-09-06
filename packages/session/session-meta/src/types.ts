@@ -50,6 +50,10 @@ export interface SessionAggregate {
   toolSteps: ToolStep[]
   /** Tool steps observed after the bound filled. */
   truncatedToolSteps: number
+  /** Skill names consulted via the `skill` tool, in order (M2.1: patch-in-place targeting). */
+  skillsConsulted: string[]
+  /** Assistant-message count when the first steering arrived (M2.2 effort gate). */
+  assistantMessagesAtFirstSteering?: number | undefined
   /** Tool-call ids still awaiting their result, mapped to step indexes. */
   pendingToolCalls: Map<string, number>
 }
@@ -59,6 +63,10 @@ export interface ToolStep {
   readonly tool: string
   ok: boolean
   error?: string | undefined
+  /** Redacted, truncated `tool/call.arguments` (M2.1 grounding). */
+  args?: string | undefined
+  /** Redacted, truncated result text on failed steps (M2.1 grounding). */
+  resultDigest?: string | undefined
 }
 
 /** One retained diagnostic evidence row. */
@@ -109,6 +117,12 @@ export interface ProjectionStep {
   readonly tool: string
   readonly ok: boolean
   readonly error?: string | undefined
+  readonly args?: string | undefined
+  readonly resultDigest?: string | undefined
+  /** A later same-tool step succeeded (M2.2: draft the retry, not the failure). */
+  readonly recovered?: boolean | undefined
+  /** Args of the later succeeding same-tool step (before/after pair). */
+  readonly retryArgs?: string | undefined
 }
 
 /**
@@ -123,6 +137,10 @@ export interface SessionProjection {
   readonly truncatedSteps: number
   readonly errors: readonly string[]
   readonly turnEnd: string | null
+  /** Turn-end kind was `completed` (M2.2: outcome-conditional proposals). */
+  readonly completed: boolean
+  /** Skill names consulted this session (M2.1: patch-in-place targeting). */
+  readonly skillsConsulted: readonly string[]
   readonly steeringTexts: readonly string[]
   readonly counts: {
     readonly events: number
@@ -141,6 +159,8 @@ export interface EvaluatorProposal {
   readonly prescribed: readonly string[]
   readonly triggerSignature: string
   readonly platform: string
+  /** When the skill applies; rendered to `whenToUse` (M2.1 retrieval). */
+  readonly triggerConditions: string
 }
 
 /** A written pipeline-gated skill draft. */

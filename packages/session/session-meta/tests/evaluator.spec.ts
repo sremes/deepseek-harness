@@ -39,6 +39,26 @@ describe('buildEvaluatorPrompt', () => {
     const prompt = JSON.parse(buildEvaluatorPrompt(input())) as { steering_records: unknown[] }
     expect(prompt.steering_records).toEqual([{ original_task: 'do x', correction: 'do y' }])
   })
+
+  it('carries outcome, consulted skills, and known signatures', () => {
+    const aggregate = makeAggregate('s1')
+    aggregate.openingTask = 'do x'
+    aggregate.toolSteps.push({ tool: 'edit', ok: true, args: '{"a":1}' })
+    aggregate.skillsConsulted.push('triage')
+    aggregate.turnEndReason = JSON.stringify({ kind: 'completed' })
+    const prompt = JSON.parse(
+      buildEvaluatorPrompt({ projection: projectSession(aggregate), steering: [], knownSignatures: ['old-draft'] }),
+    ) as Record<string, unknown>
+    expect(prompt.completed).toBe(true)
+    expect(prompt.skills_consulted).toEqual(['triage'])
+    expect(prompt.known_signatures).toEqual(['old-draft'])
+    expect((prompt.steps as Array<Record<string, unknown>>)[0]).toMatchObject({ tool: 'edit', args: '{"a":1}' })
+  })
+
+  it('defaults known signatures to empty', () => {
+    const prompt = JSON.parse(buildEvaluatorPrompt(input())) as { known_signatures: unknown }
+    expect(prompt.known_signatures).toEqual([])
+  })
 })
 
 describe('parseProposal', () => {
@@ -65,6 +85,14 @@ describe('parseProposal', () => {
     [JSON.stringify({ intent: 'x', forbidden: [], prescribed: [] }), /prescribed must be a non-empty string array/],
     [JSON.stringify({ intent: 'x', forbidden: [], prescribed: ['p'] }), /non-empty trigger_signature/],
     [JSON.stringify({ intent: 'x', forbidden: [], prescribed: ['p'], trigger_signature: 't' }), /non-empty platform/],
+    [
+      JSON.stringify({ intent: 'x', forbidden: [], prescribed: ['p'], trigger_signature: 't', platform: 'p' }),
+      /non-empty trigger_conditions/,
+    ],
+    [
+      JSON.stringify({ intent: 'x', forbidden: [], prescribed: ['p'], trigger_signature: 't', platform: 'p', trigger_conditions: '  ' }),
+      /non-empty trigger_conditions/,
+    ],
   ])('rejects %s', (text, pattern) => {
     expect(() => parseProposal(text)).toThrow(pattern)
   })

@@ -8,6 +8,7 @@ import type { EvaluatorLlm } from '../src/evaluator.ts'
 import {
   evaluateTrackASession,
   hasSteeringFile,
+  listKnownSignatures,
   loadSteeringFile,
   startOfUtcDay,
   type EvaluationConfig,
@@ -62,6 +63,16 @@ function okLlm(): EvaluatorLlm {
 describe('startOfUtcDay', () => {
   it('truncates to UTC midnight', () => {
     expect(startOfUtcDay(Date.UTC(2026, 8, 4, 12, 34, 56))).toBe(Date.UTC(2026, 8, 4))
+  })
+})
+
+describe('listKnownSignatures', () => {
+  it('lists skill directories and tolerates missing roots', async () => {
+    const home = await freshHome()
+    expect(listKnownSignatures(join(home, 'skills'))).toEqual([])
+    mkdirSync(join(home, 'skills', 'old-draft'), { recursive: true })
+    writeFileSync(join(home, 'skills', 'loose.md'), 'not a dir')
+    expect(listKnownSignatures(join(home, 'skills'))).toEqual(['old-draft'])
   })
 })
 

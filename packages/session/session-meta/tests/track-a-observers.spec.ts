@@ -6,12 +6,17 @@ import { describe, expect, it } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
 import { MetaStore } from '../src/store.ts'
 import {
+  MAX_RESULT_DIGEST_CHARS,
+  MAX_SKILLS_CONSULTED,
   MAX_STEERING_TEXTS,
+  MAX_TOOL_ARG_CHARS,
   MAX_TOOL_STEPS,
+  hasExplicitPersistRequest,
   messageText,
   observeToolCall,
   observeToolResult,
   observeUserMessage,
+  resultText,
 } from '../src/triage.ts'
 import { optionalLlm, resolveEvaluation, settleSessionMeta, shouldEvaluateTrackA } from '../src/index.ts'
 import { makeAggregate } from './helpers.ts'
@@ -220,5 +225,83 @@ describe('optionalLlm', () => {
 describe('settleSessionMeta', () => {
   it('resolves without queued work', async () => {
     await expect(settleSessionMeta()).resolves.toBeUndefined()
+  })
+})
+
+describe('M2.1 grounding capture', () => {
+  it('retains redacted truncated tool arguments', () => {
+    const aggregate = makeAggregate('s1')
+    observeToolCall(aggregate, { name: 'edit', callId: 'c1', arguments: JSON.stringify({ path: '/tmp/f', token: 'sk-abcdefgh1234' }) })
+    expect(aggregate.toolSteps[0]?.args).toBe(JSON.stringify({ path: '/tmp/f', token: '[REDACTED:sk]' }))
+    observeToolCall(aggregate, { name: 'read', arguments: 'x'.repeat(MAX_TOOL_ARG_CHARS + 50) })
+    expect(aggregate.toolSteps[1]?.args).toHaveLength(MAX_TOOL_ARG_CHARS)
+    observeToolCall(aggregate, { name: 'noop', arguments: 7 })
+    expect(aggregate.toolSteps[2]).toEqual({ tool: 'noop', ok: true })
+  })
+
+  it('folds skill-tool consults best-effort', () => {
+    const aggregate = makeAggregate('s1')
+    observeToolCall(aggregate, { name: 'skill', arguments: JSON.stringify({ name: 'triage' }) })
+    observeToolCall(aggregate, { name: 'skill', arguments: JSON.stringify({ name: 'triage' }) })
+    observeToolCall(aggregate, { name: 'skill', arguments: 'not json' })
+    observeToolCall(aggregate, { name: 'skill', arguments: JSON.stringify({ name: 7 }) })
+    observeToolCall(aggregate, { name: 'read', arguments: JSON.stringify({ name: 'triage' }) })
+    expect(aggregate.skillsConsulted).toEqual(['triage'])
+    for (let n = 0; n < MAX_SKILLS_CONSULTED; n += 1) {
+      observeToolCall(aggregate, { name: 'skill', arguments: JSON.stringify({ name: `s${n}` }) })
+    }
+    expect(aggregate.skillsConsulted).toHaveLength(MAX_SKILLS_CONSULTED)
+  })
+
+  it('retains a result digest on the failed step only', () => {
+    const aggregate = makeAggregate('s1')
+    observeToolCall(aggregate, { name: 'edit', callId: 'c1' })
+    observeToolResult(aggregate, {
+      callId: 'c1',
+      error: { name: 'EditFailed' },
+      message: { content: [{ type: 'text', text: 'path not found' }, { type: 'image' }] },
+    })
+    expect(aggregate.toolSteps[0]).toMatchObject({ ok: false, error: 'EditFailed', resultDigest: 'path not found' })
+    observeToolCall(aggregate, { name: 'read', callId: 'c2' })
+    observeToolResult(aggregate, { callId: 'c2', error: 'x' })
+    expect(aggregate.toolSteps[1]?.resultDigest).toBeUndefined()
+  })
+
+  it('marks the assistant-message count at first steering only', () => {
+    const aggregate = makeAggregate('s1')
+    aggregate.assistantMessages = 3
+    observeUserMessage(aggregate, human('first correction'), true)
+    aggregate.assistantMessages = 5
+    observeUserMessage(aggregate, human('second correction'), true)
+    expect(aggregate.assistantMessagesAtFirstSteering).toBe(3)
+  })
+})
+
+describe('resultText', () => {
+  it('joins message text blocks and caps length', () => {
+    expect(resultText({ message: { content: [{ type: 'text', text: 'a' }, { type: 'text', text: 'b' }] } })).toBe('a\nb')
+    expect(resultText({ message: { content: [{ type: 'text', text: 'x'.repeat(MAX_RESULT_DIGEST_CHARS + 10) }] } })).toHaveLength(
+      MAX_RESULT_DIGEST_CHARS,
+    )
+  })
+
+  it('returns empty on missing or odd shapes', () => {
+    expect(resultText(undefined)).toBe('')
+    expect(resultText({})).toBe('')
+    expect(resultText({ message: 7 })).toBe('')
+    expect(resultText({ message: { content: [{ type: 'image' }] } })).toBe('')
+  })
+})
+
+describe('hasExplicitPersistRequest', () => {
+  it.each([
+    ['remember this for next time', true],
+    ['From now on, confirm first', true],
+    ['as a rule, never rm -rf /tmp', true],
+    ["don't forget the changelog", true],
+    ['not like that, do it again', false],
+    ['', false],
+  ])('classifies %s -> %s', (text, expected) => {
+    expect(hasExplicitPersistRequest([text])).toBe(expected)
   })
 })

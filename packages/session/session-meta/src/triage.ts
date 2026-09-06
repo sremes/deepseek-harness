@@ -25,6 +25,15 @@ export const MAX_TOOL_STEPS = 50
 /** Steering texts retained per aggregate; beyond this the oldest drops. */
 export const MAX_STEERING_TEXTS = 10
 
+/** Tool-call argument chars retained per step (M2.1 grounding bound). */
+export const MAX_TOOL_ARG_CHARS = 500
+
+/** Result-text chars retained on failed steps (M2.1 grounding bound). */
+export const MAX_RESULT_DIGEST_CHARS = 300
+
+/** Skill names retained per aggregate; beyond this later consults drop. */
+export const MAX_SKILLS_CONSULTED = 20
+
 /** Fresh aggregate for a session; evidence starts empty. */
 export function newAggregate(
   sessionId: string,
@@ -51,6 +60,8 @@ export function newAggregate(
     openingTask: undefined,
     toolSteps: [],
     truncatedToolSteps: 0,
+    skillsConsulted: [],
+    assistantMessagesAtFirstSteering: undefined,
     pendingToolCalls: new Map(),
   }
 }
@@ -127,24 +138,82 @@ export function observeToolError(aggregate: SessionAggregate, name: string): voi
   pushUnique(aggregate.toolErrors, name)
 }
 
-/**
- * Fold one `tool/call` payload: records the step outcome slot (optimistic
+/** Fold one `tool/call` payload: records the step outcome slot (optimistic
  * ok) and maps its call id for the later result. Pure over the aggregate.
+ * M2.1: retains redacted truncated arguments and folds `skill`-tool
+ * consults for patch-in-place targeting.
  */
 export function observeToolCall(aggregate: SessionAggregate, data: unknown): void {
   const fields = (typeof data === 'object' && data !== null ? data : {}) as {
     name?: unknown
     callId?: unknown
+    arguments?: unknown
   }
   const tool = typeof fields.name === 'string' && fields.name !== '' ? fields.name : 'unknown-tool'
   if (aggregate.toolSteps.length >= MAX_TOOL_STEPS) {
     aggregate.truncatedToolSteps += 1
     return
   }
-  aggregate.toolSteps.push({ tool, ok: true })
+  const step: { tool: string; ok: boolean; args?: string } = { tool, ok: true }
+  if (typeof fields.arguments === 'string' && fields.arguments !== '') {
+    const redacted = redactString(fields.arguments, { cwd: aggregate.cwd }).text
+    step.args = redacted.slice(0, MAX_TOOL_ARG_CHARS)
+  }
+  aggregate.toolSteps.push(step)
+  if (tool === 'skill') observeSkillConsult(aggregate, fields.arguments)
   if (typeof fields.callId === 'string' && fields.callId !== '') {
     aggregate.pendingToolCalls.set(fields.callId, aggregate.toolSteps.length - 1)
   }
+}
+
+/**
+ * Fold one `skill`-tool invocation's target name. Best-effort JSON parse;
+ * unparseable arguments still counted the call, just not the consult.
+ */
+function observeSkillConsult(aggregate: SessionAggregate, rawArguments: unknown): void {
+  if (typeof rawArguments !== 'string' || aggregate.skillsConsulted.length >= MAX_SKILLS_CONSULTED) return
+  try {
+    const parsed = JSON.parse(rawArguments) as { name?: unknown }
+    if (typeof parsed.name === 'string' && parsed.name !== '' && !aggregate.skillsConsulted.includes(parsed.name)) {
+      aggregate.skillsConsulted.push(parsed.name)
+    }
+  } catch {
+    return
+  }
+}
+
+/**
+ * Best-effort plain text of a `tool/result` message payload: joins `text`
+ * content blocks under `message`, falls back to a capped JSON dump.
+ */
+export function resultText(data: unknown): string {
+  if (typeof data === 'object' && data !== null) {
+    const message = (data as { message?: unknown }).message
+    if (typeof message === 'object' && message !== null) {
+      const content = (message as { content?: unknown }).content
+      if (Array.isArray(content)) {
+        const text = content
+          .filter((block): block is { type: string; text: string } =>
+            typeof block === 'object' && block !== null &&
+            (block as { type?: unknown }).type === 'text' &&
+            typeof (block as { text?: unknown }).text === 'string')
+          .map(block => block.text)
+          .join('\n')
+        if (text !== '') return text.slice(0, MAX_RESULT_DIGEST_CHARS)
+      }
+    }
+  }
+  return ''
+}
+
+/**
+ * Whether any steering text is an explicit persist request ("remember
+ * this", "from now on", ...). M2.2: bypasses the effort gate — keyword
+ * detection, no LLM.
+ */
+export function hasExplicitPersistRequest(texts: readonly string[]): boolean {
+  return texts.some(text =>
+    /\bremember this\b|\bfrom now on\b|\bas a rule\b|don't forget|do not forget/i.test(text))
 }
 
 /**
@@ -173,6 +242,8 @@ export function observeToolResult(aggregate: SessionAggregate, data: unknown): v
   if (step !== undefined) {
     step.ok = false
     step.error = name
+    const digest = resultText(data)
+    if (digest !== '') step.resultDigest = digest
   }
 }
 
@@ -186,6 +257,9 @@ export function observeUserMessage(aggregate: SessionAggregate, data: unknown, s
   }
   if (!isSteeringMessage(data, seenAssistant)) return
   aggregate.steeringEvents += 1
+  if (aggregate.assistantMessagesAtFirstSteering === undefined) {
+    aggregate.assistantMessagesAtFirstSteering = aggregate.assistantMessages
+  }
   aggregate.steeringTexts.push(redactString(messageText(data), { cwd: aggregate.cwd }).text)
   if (aggregate.steeringTexts.length > MAX_STEERING_TEXTS) {
     aggregate.steeringTexts.shift()

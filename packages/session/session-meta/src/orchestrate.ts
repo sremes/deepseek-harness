@@ -6,7 +6,7 @@
  * and ledgered — the session pipeline never throws into flush/dispose.
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 import type { EvaluatorLlm, EvaluatorRoute } from './evaluator.ts'
 import { runEvaluator } from './evaluator.ts'
@@ -49,6 +49,20 @@ export function startOfUtcDay(now: number): number {
   const day = new Date(now)
   day.setUTCHours(0, 0, 0, 0)
   return day.getTime()
+}
+
+/**
+ * Existing draft slugs under the skill root (cheap dedup hint for the
+ * evaluator; unreadable roots yield `[]`, never a failure).
+ */
+export function listKnownSignatures(skillsDir: string): string[] {
+  try {
+    return readdirSync(skillsDir, { withFileTypes: true })
+      .filter(entry => entry.isDirectory())
+      .map(entry => entry.name)
+  } catch {
+    return []
+  }
 }
 
 /**
@@ -113,7 +127,11 @@ export async function evaluateTrackASession(
   }))
   let result: { proposal: EvaluatorProposal; inputTokens: number; outputTokens: number }
   try {
-    result = await runEvaluator(deps.llm, config, { projection, steering: redactedSteering })
+    result = await runEvaluator(
+      deps.llm,
+      config,
+      { projection, steering: redactedSteering, knownSignatures: listKnownSignatures(config.skillsDir) },
+    )
   } catch (error) {
     deps.store.recordEvaluation({ ts: now, sessionId: aggregate.sessionId, inputTokens: 0, outputTokens: 0, decision: 'llm-error', draftSlug: null })
     deps.log(`session-meta: evaluator failed for ${aggregate.sessionId}: ${String(error)}`)

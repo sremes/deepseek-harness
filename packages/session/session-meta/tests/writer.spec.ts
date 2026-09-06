@@ -11,6 +11,7 @@ const PROPOSAL: EvaluatorProposal = {
   forbidden: ['Never run rm -rf on unconfirmed paths'],
   prescribed: ['Echo the resolved path and wait for confirmation'],
   triggerSignature: 'Destructive Path Confirm!',
+  triggerConditions: 'Use when a task deletes or overwrites paths outside a scratch directory',
   platform: 'dsh-headless',
 }
 
@@ -39,6 +40,7 @@ describe('renderDraft', () => {
     const text = renderDraft(PROPOSAL, { sessions: ['s1'], mode: 'headless' }, 'destructive-path-confirm')
     expect(text).toContain('name: destructive-path-confirm')
     expect(text).toContain('disable-model-invocation: true')
+    expect(text).toContain('whenToUse: Use when a task deletes or overwrites paths outside a scratch directory')
     expect(text).toContain('confidence_score: 0')
     expect(text).toContain('trigger_signature: Destructive Path Confirm!')
     expect(text).toContain('provenance: {sessions: ["s1"], mode: "headless"}')

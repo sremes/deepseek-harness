@@ -87,6 +87,17 @@ SELECT route, COUNT(*) FROM meta_sessions GROUP BY route;
 消息源非人工的收件箱事件（`agent-message` 中转、工具帧、插件通告）
 永不视为转向。
 
+### Track A 评估输入（M2.1）
+
+评估器看到的是接地的投影，而非摘要：工具步骤携带脱敏截断后的调用参数
+（`args`，500 字符）与失败步骤的结果摘要（300 字符）；当后续同工具步骤
+成功时，失败步骤标记恢复（`recovered` 及重试参数 `retryArgs`）；负载包含
+咨询过的技能（`skillsConsulted`）、回合结果（`completed`）与已提议签名
+（`known_signatures`，从技能根目录读取）。提案必须包含
+`trigger_conditions`，渲染为草稿的 `whenToUse`。提示规则：重过程而非叙事，
+pitfall = 规则 + 一句 WHY，不带事件标识符，不重复工具 Schema，
+不断言工具损坏。
+
 <a id="理解实现"></a>
 ## 理解实现
 

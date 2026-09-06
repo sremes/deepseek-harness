@@ -12,6 +12,8 @@ describe('projectSession', () => {
       truncatedSteps: 0,
       errors: [],
       turnEnd: null,
+      completed: false,
+      skillsConsulted: [],
       steeringTexts: [],
       counts: { events: 0, toolCalls: 0, assistantMessages: 0 },
     })
@@ -53,5 +55,41 @@ describe('projectSession', () => {
     const projection = projectSession(aggregate)
     expect(projection.steeringTexts).toEqual(['not like that'])
     expect(projection.counts).toEqual({ events: 9, toolCalls: 2, assistantMessages: 1 })
+  })
+
+  it('carries args, digests, consulted skills, and the completed flag', () => {
+    const aggregate = makeAggregate('s1')
+    aggregate.toolSteps.push({ tool: 'edit', ok: true, args: '{"path":"/tmp/f"}' })
+    aggregate.toolSteps.push({ tool: 'read', ok: false, error: 'E', resultDigest: 'denied' })
+    aggregate.skillsConsulted.push('triage')
+    aggregate.turnEndReason = JSON.stringify({ kind: 'completed' })
+    const projection = projectSession(aggregate)
+    expect(projection.steps[0]).toEqual({ tool: 'edit', ok: true, args: '{"path":"/tmp/f"}' })
+    expect(projection.steps[1]).toEqual({ tool: 'read', ok: false, error: 'E', resultDigest: 'denied' })
+    expect(projection.skillsConsulted).toEqual(['triage'])
+    expect(projection.completed).toBe(true)
+  })
+
+  it('marks recovered steps with the retry arguments', () => {
+    const aggregate = makeAggregate('s1')
+    aggregate.toolSteps.push({ tool: 'edit', ok: false, error: 'E', args: '{"force":false}' })
+    aggregate.toolSteps.push({ tool: 'read', ok: true })
+    aggregate.toolSteps.push({ tool: 'edit', ok: true, args: '{"force":true}' })
+    aggregate.toolSteps.push({ tool: 'write', ok: false, error: 'W' })
+    aggregate.turnEndReason = JSON.stringify({ kind: 'completed' })
+    const projection = projectSession(aggregate)
+    expect(projection.steps[0]).toMatchObject({ recovered: true, retryArgs: '{"force":true}' })
+    expect(projection.steps[1]).not.toHaveProperty('recovered')
+    expect(projection.steps[3]).not.toHaveProperty('recovered')
+  })
+
+  it('marks recovery without retry args and leaves incomplete turns uncompleted', () => {
+    const aggregate = makeAggregate('s1')
+    aggregate.toolSteps.push({ tool: 'edit', ok: false, error: 'E' })
+    aggregate.toolSteps.push({ tool: 'edit', ok: true })
+    aggregate.turnEndReason = JSON.stringify({ kind: 'error' })
+    const projection = projectSession(aggregate)
+    expect(projection.steps[0]).toEqual({ tool: 'edit', ok: false, error: 'E', recovered: true })
+    expect(projection.completed).toBe(false)
   })
 })

@@ -88,6 +88,18 @@ SELECT route, COUNT(*) FROM meta_sessions GROUP BY route;
 Inbox events whose message source is not human (`agent-message` relays, tool
 frames, plugin notices) are never steering.
 
+### Track A evaluator input (M2.1)
+
+The projection the evaluator sees is grounded, not summarized: tool steps
+carry redacted truncated call arguments (`args`, 500 chars) and failed-step
+result digests (300 chars); failed steps mark recovery (`recovered` plus the
+retry's `retryArgs`) when a later same-tool step succeeds; the payload names
+consulted skills (`skillsConsulted`), the turn outcome (`completed`), and
+already-proposed signatures (`known_signatures`, read from the skill root).
+Proposals require `trigger_conditions`, rendered to the draft's `whenToUse`.
+Prompt rules: procedure over narrative, pitfall = rule + one clause of WHY,
+no incident identifiers, no tool-schema duplication, no broken-tool claims.
+
 <a id="understand-the-implementation"></a>
 ## Understand the implementation
 
@@ -103,11 +115,27 @@ versioned (`PRAGMA user_version = 1`); mismatches throw instead of migrating.
 
 - `src/index.ts` — function plugin (`name`/`inject`/`Config`/`apply`, no default export): firehose tap, flush/dispose finalizers, store lifetime.
 - `src/triage.ts` — pure deterministic router over `SessionAggregate`; every branch unit-tested without cordis.
+- `src/projection.ts` — per-session state projection Σ (args, digests, recovery marks, consulted skills, outcome).
+- `src/evaluator.ts` — budget-capped Flash call over Σ; schema-validated proposals.
+- `src/orchestrate.ts` — offline loop driver (budget, steering files, gated drafts).
+- `src/steering.ts` — headless correction-record ingest.
+- `src/writer.ts` — gated `SKILL.md` drafts (`disable-model-invocation`, `whenToUse`).
 - `src/redact.ts` — secret scrubbing and bounds.
 - `src/store.ts` — `node:sqlite` meta store (`MetaStore`, `META_SCHEMA_VERSION`).
 - `src/types.ts` — types only.
 
 </details>
+
+<a id="dev-note"></a>
+## Dev Note
+
+Coverage expectation is per-file 100%: `tests/redact.spec.ts`,
+`tests/track-a-observers.spec.ts`, `tests/projection.spec.ts`,
+`tests/evaluator.spec.ts`, `tests/orchestrate.spec.ts`, and
+`tests/writer.spec.ts` pin every branch of the pure modules, and
+`tests/loader-composition.spec.ts` boots the shipped YAML shape through the
+vendored Loader and asserts durable rows (routes, redaction, evidence cap,
+histogram) plus the no-default-export pin.
 
 <a id="further-exploration"></a>
 ## Further Exploration
@@ -139,17 +167,7 @@ Provider cache availability and eviction remain outside the package contract.
 <a id="known-limitations-and-deferred-work"></a>
 ## Known Limitations and Deferred Work
 
-- **No query service yet** — the M1 report surface is raw SQL against `meta.db`; a `ctx.meta` query API is deferred to M2.
-- **Steering heuristic is narrow** — only post-first-assistant human messages count; orchestrator correction records (headless mode) are not ingested yet (M2).
-- **Feedback sentiment is unparsed** — `feedback/record` events count as engagement; Like/Dislike polarity comes in M2 via `message-feedback`.
+- **No query service yet** — the report surface is raw SQL against `meta.db`; a `ctx.meta` query API is deferred to M3+.
+- **Feedback sentiment is unparsed** — `feedback/record` events count as engagement; Like/Dislike polarity is deferred to M3.
 - **No generic high-entropy secret detection** — secrets without a key anchor or known prefix pass through; hashes and ids in tool arguments are preserved deliberately.
-- **Evidence is lossy by design** — only errors and steering are retained, capped per session; full-trace replay stays in the canonical session log.
-
-<a id="dev-note"></a>
-## Dev Note
-
-Coverage expectation is per-file 100%: `tests/redact.spec.ts` and
-`tests/triage.spec.ts` pin every branch of the pure modules, and
-`tests/loader-composition.spec.ts` boots the shipped YAML shape through the
-vendored Loader and asserts durable rows (routes, redaction, evidence cap,
-histogram) plus the no-default-export pin.
+- **Evidence and projection are lossy by design** — only errors and steering are retained, capped per session; projection keeps 40 steps with truncated args/digests; full-trace replay stays in the canonical session log.

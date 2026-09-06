@@ -37,6 +37,8 @@ export interface EvaluatorRoute {
 export interface EvaluatorInput {
   readonly projection: SessionProjection
   readonly steering: readonly SteeringRecord[]
+  /** Existing draft signatures (cheap dedup hint; full merge is M3). */
+  readonly knownSignatures?: readonly string[] | undefined
 }
 
 /** One evaluator run: the validated proposal plus measured usage. */
@@ -47,10 +49,15 @@ export interface EvaluatorResult {
 }
 
 const EVALUATOR_SYSTEM = [
-  'You turn one human correction to an AI coding session into a reusable skill draft.',
-  'You receive a JSON state projection (goal, tool steps, errors, turn end, steering messages) plus the human correction.',
+  'You turn one session into a reusable skill draft.',
+  'You receive a JSON state projection (goal, tool steps WITH the arguments the model actually passed, error digests, recovery marks, skills consulted, turn outcome, steering messages) plus the human correction, if any.',
+  'Write the procedure that worked, not a narrative of the session:',
   'Ground every clause in the delta between the correction and the observed tool parameters: never invent tools, files, or commands absent from the projection.',
-  'Reply with exactly one JSON object, no fences, no prose, with keys: intent (one sentence), forbidden (array of strings, may be empty), prescribed (array of strings, non-empty), trigger_signature (short kebab-case symptom tag), platform (e.g. dsh-headless or unknown).',
+  'A pitfall is a generalizable rule plus one clause of WHY (the mechanism), imperative. Never paste error transcripts, PR numbers, dates, or session-specific identifiers as content.',
+  'Do not duplicate what tool schemas already teach (parameter lists, syntax). Do not claim a tool or feature is broken — describe the working pattern instead.',
+  'If a step failed and a later same-tool step succeeded (recovered: true), the lesson is the retry pattern (compare args with retryArgs), not the original failure.',
+  'Prefer patching what exists: the skillsConsulted list names skills already covering this territory — aim trigger_signature at the one in play rather than inventing a parallel skill. The known_signatures list names drafts already proposed — do not re-propose them.',
+  'Reply with exactly one JSON object, no fences, no prose, with keys: intent (one sentence), forbidden (array of strings, may be empty), prescribed (array of strings, non-empty), trigger_signature (short kebab-case symptom tag), trigger_conditions (one or two sentences: when a future session should load this skill), platform (e.g. dsh-headless or unknown).',
 ].join('\n')
 
 /**
@@ -64,6 +71,9 @@ export function buildEvaluatorPrompt(input: EvaluatorInput): string {
     truncated_steps: input.projection.truncatedSteps,
     errors: input.projection.errors,
     turn_end: input.projection.turnEnd,
+    completed: input.projection.completed,
+    skills_consulted: input.projection.skillsConsulted,
+    known_signatures: input.knownSignatures ?? [],
     steering_messages: input.projection.steeringTexts,
     steering_records: input.steering.map(record => ({
       original_task: record.originalTask,
@@ -102,11 +112,15 @@ export function parseProposal(text: string): EvaluatorProposal {
   if (typeof proposal.platform !== 'string' || proposal.platform.trim() === '') {
     throw new Error('session-meta: evaluator proposal needs a non-empty platform')
   }
+  if (typeof proposal.trigger_conditions !== 'string' || proposal.trigger_conditions.trim() === '') {
+    throw new Error('session-meta: evaluator proposal needs non-empty trigger_conditions')
+  }
   return {
     intent: proposal.intent,
     forbidden: proposal.forbidden,
     prescribed: proposal.prescribed,
     triggerSignature: proposal.trigger_signature,
+    triggerConditions: proposal.trigger_conditions,
     platform: proposal.platform,
   }
 }

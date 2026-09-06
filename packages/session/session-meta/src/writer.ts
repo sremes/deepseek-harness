@@ -44,6 +44,7 @@ export function renderDraft(proposal: EvaluatorProposal, provenance: DraftProven
     '---',
     `name: ${slug}`,
     `description: ${description}`,
+    `whenToUse: ${proposal.triggerConditions.replace(/\s+/g, ' ').trim()}`,
     'disable-model-invocation: true',
     'metadata:',
     '  confidence_score: 0',

@@ -12,6 +12,7 @@ export const VALID_PROPOSAL_JSON = JSON.stringify({
   forbidden: ['Never run rm -rf on unconfirmed paths'],
   prescribed: ['Echo the resolved path and wait for confirmation'],
   trigger_signature: 'destructive-path-confirm',
+  trigger_conditions: 'Use when a task deletes or overwrites paths outside a scratch directory',
   platform: 'dsh-headless',
 })
 
@@ -56,6 +57,8 @@ export function makeAggregate(sessionId: string): SessionAggregate {
     openingTask: undefined,
     toolSteps: [],
     truncatedToolSteps: 0,
+    skillsConsulted: [],
+    assistantMessagesAtFirstSteering: undefined,
     pendingToolCalls: new Map(),
   }
 }
