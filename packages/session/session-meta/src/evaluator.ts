@@ -56,8 +56,9 @@ const EVALUATOR_SYSTEM = [
   'A pitfall is a generalizable rule plus one clause of WHY (the mechanism), imperative. Never paste error transcripts, PR numbers, dates, or session-specific identifiers as content.',
   'Do not duplicate what tool schemas already teach (parameter lists, syntax). Do not claim a tool or feature is broken — describe the working pattern instead.',
   'If a step failed and a later same-tool step succeeded (recovered: true), the lesson is the retry pattern (compare args with retryArgs), not the original failure.',
+  'If completed is false, the session never verified a working method: write Forbidden-clauses only and leave prescribed empty. Never present an uncompleted attempt as a verified procedure.',
   'Prefer patching what exists: the skillsConsulted list names skills already covering this territory — aim trigger_signature at the one in play rather than inventing a parallel skill. The known_signatures list names drafts already proposed — do not re-propose them.',
-  'Reply with exactly one JSON object, no fences, no prose, with keys: intent (one sentence), forbidden (array of strings, may be empty), prescribed (array of strings, non-empty), trigger_signature (short kebab-case symptom tag), trigger_conditions (one or two sentences: when a future session should load this skill), platform (e.g. dsh-headless or unknown).',
+  'Reply with exactly one JSON object, no fences, no prose, with keys: intent (one sentence), forbidden (array of strings, may be empty), prescribed (array of strings; non-empty when completed is true, empty when completed is false), trigger_signature (short kebab-case symptom tag), trigger_conditions (one or two sentences: when a future session should load this skill), platform (e.g. dsh-headless or unknown).',
 ].join('\n')
 
 /**
@@ -87,9 +88,11 @@ export function buildEvaluatorPrompt(input: EvaluatorInput): string {
 /**
  * Extract and schema-validate one proposal from model text. Tolerates
  * fenced code blocks; rejects anything that is not a single JSON object
- * with the required shape. Pure: throw sites are all unit-covered.
+ * with the required shape. `completed` gates the prescription rule (M2.2):
+ * only a completed session may prescribe a procedure. Pure: throw sites
+ * are all unit-covered.
  */
-export function parseProposal(text: string): EvaluatorProposal {
+export function parseProposal(text: string, completed = true): EvaluatorProposal {
   const json = extractJsonObject(text)
   let proposal: Record<string, unknown>
   try {
@@ -103,7 +106,7 @@ export function parseProposal(text: string): EvaluatorProposal {
   if (!isStringArray(proposal.forbidden)) {
     throw new Error('session-meta: evaluator proposal forbidden must be a string array')
   }
-  if (!isStringArray(proposal.prescribed) || proposal.prescribed.length === 0) {
+  if (!isStringArray(proposal.prescribed) || (completed && proposal.prescribed.length === 0)) {
     throw new Error('session-meta: evaluator proposal prescribed must be a non-empty string array')
   }
   if (typeof proposal.trigger_signature !== 'string' || proposal.trigger_signature.trim() === '') {
@@ -191,7 +194,7 @@ export async function runEvaluator(
   }
   const usage = assembler.usage
   return {
-    proposal: parseProposal(text),
+    proposal: parseProposal(text, input.projection.completed),
     inputTokens: usage?.inputTokens ?? 0,
     outputTokens: usage?.outputTokens ?? 0,
   }

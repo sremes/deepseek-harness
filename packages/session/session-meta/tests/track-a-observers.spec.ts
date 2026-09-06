@@ -16,9 +16,11 @@ import {
   observeToolCall,
   observeToolResult,
   observeUserMessage,
+  resultCallId,
   resultText,
 } from '../src/triage.ts'
 import { optionalLlm, resolveEvaluation, settleSessionMeta, shouldEvaluateTrackA } from '../src/index.ts'
+import type { SessionAggregate } from '../src/types.ts'
 import { makeAggregate } from './helpers.ts'
 
 function human(text: string): unknown {
@@ -181,6 +183,8 @@ describe('resolveEvaluation', () => {
       maxOutputTokens: 2000,
       timeoutMs: 120000,
       maxCallsPerDay: 1,
+      minEvalToolCalls: 3,
+      earlySteeringMessages: 1,
       skillsDir: '/home/skills',
     })
   })
@@ -201,14 +205,55 @@ describe('resolveEvaluation', () => {
 })
 
 describe('shouldEvaluateTrackA', () => {
-  it.each([
-    ['track_a', true, true, true],
-    ['track_a', true, false, false],
-    ['track_a', false, true, false],
-    ['track_b', true, true, false],
-    ['no_op', false, false, false],
-  ] as const)('route=%s enabled=%s steering=%s -> %s', (route, enabled, steering, expected) => {
-    expect(shouldEvaluateTrackA(route, enabled, steering)).toBe(expected)
+  const EFFORT = { minEvalToolCalls: 3, earlySteeringMessages: 1 }
+
+  function gated(sessionId: string, build: (aggregate: SessionAggregate) => void): boolean {
+    const aggregate = makeAggregate(sessionId)
+    build(aggregate)
+    return shouldEvaluateTrackA('track_a', true, aggregate, aggregate.steeringTexts.length > 0, EFFORT)
+  }
+
+  it('rejects wrong routes, disabled loops, and missing steering', () => {
+    const aggregate = makeAggregate('s1')
+    aggregate.toolCalls = 9
+    expect(shouldEvaluateTrackA('track_b', true, aggregate, true, EFFORT)).toBe(false)
+    expect(shouldEvaluateTrackA('no_op', true, aggregate, true, EFFORT)).toBe(false)
+    expect(shouldEvaluateTrackA('track_a', false, aggregate, true, EFFORT)).toBe(false)
+    expect(shouldEvaluateTrackA('track_a', true, aggregate, false, EFFORT)).toBe(false)
+  })
+
+  it('evaluates substantial steered sessions', () => {
+    expect(gated('s1', (aggregate) => {
+      aggregate.toolCalls = 5
+      aggregate.assistantMessages = 4
+      aggregate.assistantMessagesAtFirstSteering = 4
+      aggregate.steeringTexts.push('use the other endpoint')
+    })).toBe(true)
+  })
+
+  it('skips typo-class sessions: few calls, early steering, no recovery', () => {
+    expect(gated('s1', (aggregate) => {
+      aggregate.toolCalls = 1
+      aggregate.assistantMessages = 1
+      aggregate.assistantMessagesAtFirstSteering = 1
+      aggregate.steeringTexts.push('typo: teh -> the')
+    })).toBe(false)
+  })
+
+  it('evaluates recovered sessions even without steering', () => {
+    expect(gated('s1', (aggregate) => {
+      aggregate.toolCalls = 2
+      aggregate.toolSteps.push({ tool: 'edit', ok: false, error: 'E' }, { tool: 'edit', ok: true })
+    })).toBe(true)
+  })
+
+  it('lets explicit persist requests bypass the effort gate', () => {
+    expect(gated('s1', (aggregate) => {
+      aggregate.toolCalls = 1
+      aggregate.assistantMessages = 1
+      aggregate.assistantMessagesAtFirstSteering = 1
+      aggregate.steeringTexts.push('remember this for next time')
+    })).toBe(true)
   })
 })
 
@@ -290,6 +335,36 @@ describe('resultText', () => {
     expect(resultText({})).toBe('')
     expect(resultText({ message: 7 })).toBe('')
     expect(resultText({ message: { content: [{ type: 'image' }] } })).toBe('')
+  })
+})
+
+describe('resultCallId', () => {
+  it('prefers top-level ids, then message nests, then content blocks', () => {
+    expect(resultCallId('top', { callId: 'nested' })).toBe('top')
+    expect(resultCallId(undefined, { callId: 'direct' })).toBe('direct')
+    expect(resultCallId(undefined, { source: { kind: 'tool', callId: 'sourced' } })).toBe('sourced')
+    expect(
+      resultCallId(undefined, { content: [{ type: 'tool-result', toolCallId: 'blocked' }] }),
+    ).toBe('blocked')
+  })
+
+  it('skips empty and non-string ids and survives odd shapes', () => {
+    expect(resultCallId('', { callId: 'fallback' })).toBe('fallback')
+    expect(resultCallId(undefined, { callId: '', source: { callId: 'sourced' } })).toBe('sourced')
+    expect(resultCallId(undefined, undefined)).toBeUndefined()
+    expect(resultCallId(undefined, 7)).toBeUndefined()
+    expect(resultCallId(undefined, { source: 7, content: [{ toolCallId: 7 }, null] })).toBeUndefined()
+    expect(resultCallId(undefined, { content: [{ type: 'text', text: 'x' }] })).toBeUndefined()
+  })
+
+  it('attributes live-shaped error results to their call step', () => {
+    const aggregate = makeAggregate('s1')
+    observeToolCall(aggregate, { name: 'edit', callId: 'f1' })
+    observeToolResult(aggregate, {
+      error: { name: 'E_TIMEOUT' },
+      message: { source: { kind: 'tool', callId: 'f1' }, content: [{ type: 'tool-result', toolCallId: 'f1' }] },
+    })
+    expect(aggregate.toolSteps[0]).toMatchObject({ tool: 'edit', ok: false, error: 'E_TIMEOUT' })
   })
 })
 

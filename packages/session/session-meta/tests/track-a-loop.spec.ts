@@ -11,7 +11,7 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { afterEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
-import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { ToolCallId, createAssistantMessage, createToolResultMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { AssistantMessage, StreamChunk } from '@deepseek-ai/dsh-llm'
 import * as SessionMetaPlugin from '../src/index.ts'
 import { settleSessionMeta } from '../src/index.ts'
@@ -70,6 +70,82 @@ function appendSteered(loaded: Context, id: string) {
   return session
 }
 
+/** Steered session with enough tool work to pass the M2.2 effort gate. */
+function appendSubstantial(loaded: Context, id: string) {
+  const session = loaded.sessions.create(SessionId(id))
+  session.append('turn/start', { turn: 1 })
+  session.append('assistant/message', { turn: 1, step: 1, message: assistantText('first try') }, SURFACE)
+  for (let step = 1; step <= 3; step += 1) {
+    const callId = ToolCallId(`read-${step}`)
+    session.append('tool/call', { turn: 1, step, callId, name: 'read', arguments: '{"path":"/tmp/f"}' })
+    session.append(
+      'tool/result',
+      {
+        turn: 1,
+        step,
+        message: createToolResultMessage({ callId, content: [{ type: 'text', text: 'ok' }], isError: false }),
+      },
+      SURFACE,
+    )
+  }
+  session.append(
+    'user/message',
+    createUserMessage({ content: [{ type: 'text', text: 'no, confirm first' }], source: { kind: 'user' } }),
+    SURFACE,
+  )
+  session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+  return session
+}
+
+/** Flail-then-succeed with no steering: fail once, retry, complete. */
+function appendFlailThenSucceed(loaded: Context, id: string) {
+  const session = loaded.sessions.create(SessionId(id))
+  session.append('turn/start', { turn: 1 })
+  session.append('assistant/message', { turn: 1, step: 1, message: assistantText('trying') }, SURFACE)
+  session.append('tool/call', { turn: 1, step: 1, callId: ToolCallId('f1'), name: 'edit', arguments: '{"force":false}' })
+  session.append(
+    'tool/result',
+    {
+      turn: 1,
+      step: 1,
+      message: createToolResultMessage({ callId: ToolCallId('f1'), content: [{ type: 'text', text: 'denied' }], isError: true }),
+      error: { name: 'E_TIMEOUT', code: 'E_TIMEOUT' },
+    },
+    SURFACE,
+  )
+  session.append('tool/call', { turn: 1, step: 2, callId: ToolCallId('f2'), name: 'edit', arguments: '{"force":true}' })
+  session.append(
+    'tool/result',
+    {
+      turn: 1,
+      step: 2,
+      message: createToolResultMessage({ callId: ToolCallId('f2'), content: [{ type: 'text', text: 'ok' }], isError: false }),
+    },
+    SURFACE,
+  )
+  session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+  return session
+}
+
+/** Structural crash: parser error, blocked turn, no recovery. */
+function appendCrash(loaded: Context, id: string) {
+  const session = loaded.sessions.create(SessionId(id))
+  session.append('turn/start', { turn: 1 })
+  session.append('tool/call', { turn: 1, step: 1, callId: ToolCallId('b1'), name: 'write', arguments: '{}' })
+  session.append(
+    'tool/result',
+    {
+      turn: 1,
+      step: 1,
+      message: createToolResultMessage({ callId: ToolCallId('b1'), content: [{ type: 'text', text: 'bad' }], isError: true }),
+      error: { name: 'SyntaxError', code: 'E_PARSE' },
+    },
+    SURFACE,
+  )
+  session.append('turn/end', { turn: 1, reason: { kind: 'blocked' } })
+  return session
+}
+
 describe('Track A loop wiring', () => {
   it('writes a gated draft for a steered session and consumes the steering file', async () => {
     root = await mkdtemp(join(tmpdir(), 'dsh-track-a-wired-'))
@@ -78,7 +154,7 @@ describe('Track A loop wiring', () => {
     const loaded = await setup(home, { evaluator: { enabled: true, provider: 'flash', model: 'flash-1' } }, true)
     mkdirSync(join(home, 'meta', 'steering'), { recursive: true })
     writeFileSync(steeringFilePath(home, 'wired'), JSON.stringify({ original_task: 'do x', correction: 'confirm first' }))
-    await loaded.sessions.flush(appendSteered(loaded, 'wired'))
+    await loaded.sessions.flush(appendSubstantial(loaded, 'wired'))
     await settleSessionMeta()
 
     expect(existsSync(join(home, 'skills', 'destructive-path-confirm', 'SKILL.md'))).toBe(true)
@@ -139,6 +215,60 @@ describe('Track A loop wiring', () => {
     const store = new MetaStore({ dbPath: join(home, 'meta', 'meta.db') })
     try {
       expect(store.routeHistogram()).toMatchObject({ track_a: 1 })
+      expect(store.countEvaluationsSince(0)).toBe(0)
+    } finally {
+      store.close()
+    }
+  })
+
+  it('skips trivial steered sessions without evaluating (M2.2 effort gate)', async () => {
+    root = await mkdtemp(join(tmpdir(), 'dsh-track-a-trivial-'))
+    if (root === undefined) throw new Error('tmp root missing')
+    const home: string = root
+    const loaded = await setup(home, { evaluator: { enabled: true, provider: 'flash', model: 'flash-1' } }, true)
+    await loaded.sessions.flush(appendSteered(loaded, 'typo'))
+    await settleSessionMeta()
+
+    expect(existsSync(join(home, 'skills'))).toBe(false)
+    const store = new MetaStore({ dbPath: join(home, 'meta', 'meta.db') })
+    try {
+      expect(store.routeHistogram()).toMatchObject({ track_a: 1 })
+      expect(store.countEvaluationsSince(0)).toBe(0)
+    } finally {
+      store.close()
+    }
+  })
+
+  it('mines flail-then-succeed sessions with no steering (M2.2 success path)', async () => {
+    root = await mkdtemp(join(tmpdir(), 'dsh-track-a-mined-'))
+    if (root === undefined) throw new Error('tmp root missing')
+    const home: string = root
+    const loaded = await setup(home, { evaluator: { enabled: true, provider: 'flash', model: 'flash-1' } }, true)
+    await loaded.sessions.flush(appendFlailThenSucceed(loaded, 'mined'))
+    await settleSessionMeta()
+
+    expect(existsSync(join(home, 'skills', 'destructive-path-confirm', 'SKILL.md'))).toBe(true)
+    const store = new MetaStore({ dbPath: join(home, 'meta', 'meta.db') })
+    try {
+      expect(store.routeHistogram()).toMatchObject({ track_a: 1 })
+      expect(store.countEvaluationsSince(0)).toBe(1)
+    } finally {
+      store.close()
+    }
+  })
+
+  it('leaves crashed sessions to Track B without evaluating', async () => {
+    root = await mkdtemp(join(tmpdir(), 'dsh-track-a-crash-'))
+    if (root === undefined) throw new Error('tmp root missing')
+    const home: string = root
+    const loaded = await setup(home, { evaluator: { enabled: true, provider: 'flash', model: 'flash-1' } }, true)
+    await loaded.sessions.flush(appendCrash(loaded, 'crash'))
+    await settleSessionMeta()
+
+    expect(existsSync(join(home, 'skills'))).toBe(false)
+    const store = new MetaStore({ dbPath: join(home, 'meta', 'meta.db') })
+    try {
+      expect(store.routeHistogram()).toMatchObject({ track_b: 1 })
       expect(store.countEvaluationsSince(0)).toBe(0)
     } finally {
       store.close()

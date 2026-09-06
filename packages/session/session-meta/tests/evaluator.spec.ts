@@ -100,6 +100,13 @@ describe('parseProposal', () => {
   it('rejects malformed JSON inside braces', () => {
     expect(() => parseProposal('{not valid json}')).toThrow(/not valid JSON/)
   })
+
+  it('allows empty prescribed only for uncompleted sessions', () => {
+    const base = { intent: 'x', forbidden: ['f'], trigger_signature: 't', trigger_conditions: 'c', platform: 'p' }
+    expect(() => parseProposal(JSON.stringify({ ...base, prescribed: [] }))).toThrow(/prescribed must be a non-empty/)
+    expect(parseProposal(JSON.stringify({ ...base, prescribed: [] }), false).prescribed).toEqual([])
+    expect(parseProposal(JSON.stringify({ ...base, prescribed: ['p'] }), false).prescribed).toEqual(['p'])
+  })
 })
 
 describe('runEvaluator', () => {

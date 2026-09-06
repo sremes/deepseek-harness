@@ -81,9 +81,11 @@ SELECT route, COUNT(*) FROM meta_sessions GROUP BY route;
 
 | Route | Trigger |
 |---|---|
-| `track_b` | Structural error (`SyntaxError`, `JSONParseError`, `ZodError`, `ERR_REGEX_TIMEOUT`, `ERR_TOOL_SCHEMA_VIOLATION`), any `agent/error`, any other tool error, or a non-`completed` turn end. |
-| `track_a` | Human steering: a `user`-kind `user/message` arriving after the first assistant message (the opening prompt is a task, not a correction). |
+| `track_b` | Structural error (`SyntaxError`, `JSONParseError`, `ZodError`, `ERR_REGEX_TIMEOUT`, `ERR_TOOL_SCHEMA_VIOLATION`), any `agent/error`, any *unrecovered* tool error, or a non-`completed` turn end. |
+| `track_a` | Human steering (a `user`-kind `user/message` after the first assistant message), or proven recovery: every failed step has a later succeeding same-tool step on a `completed` turn (`success-recovered`, with or without steering). |
 | `no_op` | Neither signal. |
+
+Result call ids are read from top-level `callId`, `message.callId`, `message.source.callId`, or content-block `toolCallId` (live `dsh-tool-result` shape); error names without step evidence still count, but never prove recovery.
 
 Inbox events whose message source is not human (`agent-message` relays, tool
 frames, plugin notices) are never steering.
@@ -97,8 +99,16 @@ retry's `retryArgs`) when a later same-tool step succeeds; the payload names
 consulted skills (`skillsConsulted`), the turn outcome (`completed`), and
 already-proposed signatures (`known_signatures`, read from the skill root).
 Proposals require `trigger_conditions`, rendered to the draft's `whenToUse`.
-Prompt rules: procedure over narrative, pitfall = rule + one clause of WHY,
-no incident identifiers, no tool-schema duplication, no broken-tool claims.
+Non-completed sessions yield Forbidden-clauses only (never a prescribed
+procedure for an unverified attempt). Prompt rules: procedure over narrative,
+pitfall = rule + one clause of WHY, no incident identifiers, no tool-schema
+duplication, no broken-tool claims.
+
+The M2.2 effort gate spends evaluator calls where signal exists: trivial
+sessions (few tool calls, early-only steering, no recovery) are skipped;
+explicit persist requests ("remember this", "from now on", ...) always
+evaluate. Knobs: `evaluator.minEvalToolCalls` (default 3),
+`evaluator.earlySteeringMessages` (default 1).
 
 <a id="understand-the-implementation"></a>
 ## Understand the implementation

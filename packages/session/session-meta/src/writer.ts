@@ -62,7 +62,7 @@ export function renderDraft(proposal: EvaluatorProposal, provenance: DraftProven
     '',
     '## Prescribed',
     '',
-    prescribed,
+    prescribed === '' ? '- (none recorded)' : prescribed,
     '',
     `_Platform: ${proposal.platform}. Draft only: model invocation is disabled until the promotion pipeline passes._`,
     '',

@@ -53,6 +53,12 @@ describe('renderDraft', () => {
     expect(text).toContain('- (none recorded)')
   })
 
+  it('marks empty prescribed lists explicitly', () => {
+    const text = renderDraft({ ...PROPOSAL, prescribed: [] }, { sessions: [], mode: 'cli' }, 'slug')
+    expect(text).toContain('## Prescribed')
+    expect(text).toContain('- (none recorded)')
+  })
+
   it('collapses whitespace and caps the description', () => {
     const text = renderDraft(
       { ...PROPOSAL, intent: `line one\n   line\ttwo ${'x'.repeat(MAX_DRAFT_DESCRIPTION_CHARS + 50)}` },

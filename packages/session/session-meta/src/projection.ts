@@ -58,9 +58,10 @@ export function projectSession(aggregate: SessionAggregate, maxSteps: number = D
 /**
  * Map failed step indexes to the args of the first later succeeding
  * same-tool step. A failed step with an entry recovered; without one it
- * stayed failed. Pure over the step list.
+ * stayed failed. Pure over the step list. Shared with the triage router
+ * (`hasRecoveredErrors`), which proves recovery from the same map.
  */
-function recoveryMap(steps: ReadonlyArray<{ tool: string; ok: boolean; args?: string | undefined }>): Map<number, string> {
+export function recoveryMap(steps: ReadonlyArray<{ tool: string; ok: boolean; args?: string | undefined }>): Map<number, string> {
   const recovered = new Map<number, string>()
   for (let index = 0; index < steps.length; index += 1) {
     const step = steps[index]

@@ -25,6 +25,8 @@ const CONFIG: EvaluationConfig = {
   maxOutputTokens: 2000,
   timeoutMs: 5000,
   maxCallsPerDay: 1,
+  minEvalToolCalls: 3,
+  earlySteeringMessages: 1,
   skillsDir: '',
 }
 

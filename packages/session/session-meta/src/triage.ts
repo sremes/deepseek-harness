@@ -17,6 +17,7 @@
  */
 
 import type { MetaRoute, MetaTriage, SessionAggregate } from './types.ts'
+import { recoveryMap } from './projection.ts'
 import { redactString } from './redact.ts'
 
 /** Tool steps retained per aggregate; beyond this the projection counts truncation. */
@@ -219,7 +220,9 @@ export function hasExplicitPersistRequest(texts: readonly string[]): boolean {
 /**
  * Fold one errored `tool/result` payload: records the error name and marks
  * the matching step failed. The call id rides top-level in synthetic
- * payloads and inside `message` in live session events — both are honored.
+ * payloads; in live session events it nests inside `message` — as
+ * `message.callId`, `message.source.callId`, or a content block's
+ * `toolCallId` (the `dsh-tool-result` block shape). All are honored.
  * Results without a recorded call id still fold the error (attribution
  * degrades, counting does not).
  */
@@ -231,11 +234,7 @@ export function observeToolResult(aggregate: SessionAggregate, data: unknown): v
   }
   const name = errorNameOf(fields.error)
   observeToolError(aggregate, name)
-  const nested = (typeof fields.message === 'object' && fields.message !== null ? fields.message : {}) as {
-    callId?: unknown
-  }
-  const rawCallId = typeof fields.callId === 'string' ? fields.callId : nested.callId
-  const callId = typeof rawCallId === 'string' ? rawCallId : undefined
+  const callId = resultCallId(fields.callId, fields.message)
   const index = callId === undefined ? undefined : aggregate.pendingToolCalls.get(callId)
   if (index === undefined) return
   const step = aggregate.toolSteps[index]
@@ -245,6 +244,31 @@ export function observeToolResult(aggregate: SessionAggregate, data: unknown): v
     const digest = resultText(data)
     if (digest !== '') step.resultDigest = digest
   }
+}
+
+/**
+ * Best-effort call id for a `tool/result` payload: top-level `callId`,
+ * then `message.callId`, `message.source.callId`, then the first string
+ * `toolCallId` in `message.content` blocks. Never throws on odd shapes.
+ */
+export function resultCallId(topCallId: unknown, message: unknown): string | undefined {
+  if (typeof topCallId === 'string' && topCallId !== '') return topCallId
+  if (typeof message !== 'object' || message === null) return undefined
+  const msg = message as { callId?: unknown; source?: unknown; content?: unknown }
+  if (typeof msg.callId === 'string' && msg.callId !== '') return msg.callId
+  if (typeof msg.source === 'object' && msg.source !== null) {
+    const sourceCallId = (msg.source as { callId?: unknown }).callId
+    if (typeof sourceCallId === 'string' && sourceCallId !== '') return sourceCallId
+  }
+  if (Array.isArray(msg.content)) {
+    for (const block of msg.content) {
+      if (typeof block === 'object' && block !== null) {
+        const toolCallId = (block as { toolCallId?: unknown }).toolCallId
+        if (typeof toolCallId === 'string' && toolCallId !== '') return toolCallId
+      }
+    }
+  }
+  return undefined
 }
 
 /**
@@ -279,6 +303,18 @@ export function observeAgentError(aggregate: SessionAggregate, name: string): vo
   pushUnique(aggregate.agentErrors, name)
 }
 
+/**
+ * Whether the session shows proven recovery: at least one failed step, and
+ * every failed step has a later succeeding same-tool step. Recovery proven
+ * only by steps — error names without step evidence do not count.
+ */
+export function hasRecoveredErrors(aggregate: SessionAggregate): boolean {
+  const failed = aggregate.toolSteps.filter(step => !step.ok)
+  if (failed.length === 0) return false
+  const recovered = recoveryMap(aggregate.toolSteps)
+  return aggregate.toolSteps.every((step, index) => step.ok || recovered.has(index))
+}
+
 /** Route one finished aggregate. Every branch is total — reasons always explain. */
 export function triage(aggregate: SessionAggregate): MetaTriage {
   const reasons: string[] = []
@@ -294,7 +330,16 @@ export function triage(aggregate: SessionAggregate): MetaTriage {
   if (structural.length > 0 || aggregate.agentErrors.length > 0 || turnFailed) {
     route = 'track_b'
   } else if (aggregate.toolErrors.length > 0) {
-    route = 'track_b'
+    // M2.2: recovered errors on a completed turn are procedural memory
+    // (how the session recovered), not structural telemetry. turnFailed is
+    // false on this branch, so a present turn-end reason means completed.
+    if (aggregate.turnEndReason !== undefined && hasRecoveredErrors(aggregate)) {
+      route = 'track_a'
+      reasons.push('success-recovered')
+      if (aggregate.steeringEvents > 0) reasons.push(`steering:${aggregate.steeringEvents}`)
+    } else {
+      route = 'track_b'
+    }
   } else if (aggregate.steeringEvents > 0) {
     route = 'track_a'
     reasons.push(`steering:${aggregate.steeringEvents}`)

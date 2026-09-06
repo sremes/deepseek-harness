@@ -24,7 +24,7 @@ import type {} from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-command-feedback'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import type { MetaRoute, SessionAggregate } from './types.ts'
-import { errorNameOf, isSteeringMessage, newAggregate, observeAgentError, observeToolCall, observeToolResult, observeUserMessage, triage } from './triage.ts'
+import { errorNameOf, hasExplicitPersistRequest, hasRecoveredErrors, isSteeringMessage, newAggregate, observeAgentError, observeToolCall, observeToolResult, observeUserMessage, triage } from './triage.ts'
 import { redactString, redactValue } from './redact.ts'
 import { MetaStore } from './store.ts'
 import type { EvaluatorLlm } from './evaluator.ts'
@@ -65,6 +65,10 @@ export interface EvaluatorInputConfig {
   maxOutputTokens?: number
   timeoutMs?: number
   maxCallsPerDay?: number
+  /** Sessions below this tool-call count need recovery or late steering to evaluate. */
+  minEvalToolCalls?: number
+  /** Steering at or before this many assistant messages counts as early (trivial). */
+  earlySteeringMessages?: number
 }
 
 export const Config: z<Config> = z.object({
@@ -107,6 +111,8 @@ const EVALUATOR_DEFAULTS = {
   maxOutputTokens: 2000,
   timeoutMs: 120000,
   maxCallsPerDay: 1,
+  minEvalToolCalls: 3,
+  earlySteeringMessages: 1,
 } as const
 
 /**
@@ -130,6 +136,8 @@ export function resolveEvaluation(config: Config, home: string): EvaluationConfi
     maxOutputTokens: raw.maxOutputTokens ?? EVALUATOR_DEFAULTS.maxOutputTokens,
     timeoutMs: raw.timeoutMs ?? EVALUATOR_DEFAULTS.timeoutMs,
     maxCallsPerDay: raw.maxCallsPerDay ?? EVALUATOR_DEFAULTS.maxCallsPerDay,
+    minEvalToolCalls: raw.minEvalToolCalls ?? EVALUATOR_DEFAULTS.minEvalToolCalls,
+    earlySteeringMessages: raw.earlySteeringMessages ?? EVALUATOR_DEFAULTS.earlySteeringMessages,
     skillsDir: config.skillsDir === undefined || config.skillsDir === '' ? join(home, 'skills') : config.skillsDir,
   }
 }
@@ -143,10 +151,26 @@ export function optionalLlm(ctx: Context): EvaluatorLlm | undefined {
 
 /**
  * Whether a finalized session should run the Track A evaluator. Pure:
- * unit-covered without a context (every combination is a row in the spec).
+ * unit-covered without a context. M2.2 effort gate: below `minEvalToolCalls`
+ * with early-only steering and no recovery, the session is trivial (a typo
+ * correction, not a learnable workflow) — except explicit persist requests,
+ * which always evaluate.
  */
-export function shouldEvaluateTrackA(route: MetaRoute, enabled: boolean, hasSteering: boolean): boolean {
-  return route === 'track_a' && enabled && hasSteering
+export function shouldEvaluateTrackA(
+  route: MetaRoute,
+  enabled: boolean,
+  aggregate: SessionAggregate,
+  hasSteering: boolean,
+  effort: Pick<EvaluationConfig, 'minEvalToolCalls' | 'earlySteeringMessages'>,
+): boolean {
+  if (route !== 'track_a' || !enabled) return false
+  if (hasExplicitPersistRequest(aggregate.steeringTexts)) return true
+  const recovered = hasRecoveredErrors(aggregate)
+  if (!hasSteering && !recovered) return false
+  if (recovered) return true
+  const firstSteeringAt = aggregate.assistantMessagesAtFirstSteering ?? 0
+  const trivial = aggregate.toolCalls < effort.minEvalToolCalls && firstSteeringAt <= effort.earlySteeringMessages
+  return !trivial
 }
 
 /** Queue one Track A evaluation without blocking flush/dispose. */
@@ -272,7 +296,9 @@ function finalizeSession(tracker: Tracker, session: Session, ctx: Context): void
     shouldEvaluateTrackA(
       verdict.route,
       tracker.evaluation.enabled,
+      aggregate,
       aggregate.steeringTexts.length > 0 || hasSteeringFile(tracker.home, aggregate.sessionId),
+      tracker.evaluation,
     )
   ) {
     queueEvaluation(tracker, ctx, aggregate)

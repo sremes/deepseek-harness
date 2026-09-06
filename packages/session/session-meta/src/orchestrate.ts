@@ -13,6 +13,7 @@ import { runEvaluator } from './evaluator.ts'
 import { projectSession as buildProjection } from './projection.ts'
 import { redactString } from './redact.ts'
 import { parseSteeringFile, processedSteeringDir, steeringFilePath } from './steering.ts'
+import { hasRecoveredErrors } from './triage.ts'
 import type { MetaStore } from './store.ts'
 import type { EvaluatorProposal, SessionAggregate, SteeringRecord } from './types.ts'
 import { writeSkillDraft } from './writer.ts'
@@ -26,6 +27,8 @@ export function hasSteeringFile(home: string, sessionId: string): boolean {
 export interface EvaluationConfig extends EvaluatorRoute {
   readonly enabled: boolean
   readonly maxCallsPerDay: number
+  readonly minEvalToolCalls: number
+  readonly earlySteeringMessages: number
   readonly skillsDir: string
 }
 
@@ -105,7 +108,9 @@ export async function evaluateTrackASession(
 ): Promise<EvaluationOutcome> {
   const fileRecord = loadSteeringFile(deps.home, aggregate.sessionId, deps.log)
   const steering: SteeringRecord[] = [...(fileRecord === undefined ? [] : [fileRecord])]
-  if (aggregate.steeringTexts.length === 0 && steering.length === 0) {
+  // M2.2: proven recovery is itself evaluable content (success mining) —
+  // the evaluator drafts the retry pattern, not a correction.
+  if (aggregate.steeringTexts.length === 0 && steering.length === 0 && !hasRecoveredErrors(aggregate)) {
     deps.log(`session-meta: skipping evaluator for ${aggregate.sessionId} (no steering content)`)
     return { decision: 'skipped:no-steering', draftSlug: null }
   }

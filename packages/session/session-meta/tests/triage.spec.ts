@@ -6,10 +6,13 @@
 import { describe, expect, it } from 'vitest'
 import {
   errorNameOf,
+  hasRecoveredErrors,
   isSteeringMessage,
   newAggregate,
   observeAgentError,
+  observeToolCall,
   observeToolError,
+  observeToolResult,
   triage,
 } from '../src/triage.ts'
 
@@ -125,5 +128,74 @@ describe('triage', () => {
     aggregate.steeringEvents = 1
     observeToolError(aggregate, 'SyntaxError')
     expect(triage(aggregate).route).toBe('track_b')
+  })
+})
+
+describe('hasRecoveredErrors', () => {
+  it('requires failed steps and full recovery', () => {
+    expect(hasRecoveredErrors(newAggregate('s', 0))).toBe(false)
+    const clean = newAggregate('s', 0)
+    clean.toolSteps.push({ tool: 'read', ok: true })
+    expect(hasRecoveredErrors(clean)).toBe(false)
+    const partial = newAggregate('s', 0)
+    partial.toolSteps.push(
+      { tool: 'edit', ok: false, error: 'E1' },
+      { tool: 'edit', ok: true },
+      { tool: 'write', ok: false, error: 'E2' },
+    )
+    expect(hasRecoveredErrors(partial)).toBe(false)
+    const recovered = newAggregate('s', 0)
+    recovered.toolSteps.push({ tool: 'edit', ok: false, error: 'E1' }, { tool: 'edit', ok: true })
+    expect(hasRecoveredErrors(recovered)).toBe(true)
+  })
+})
+
+describe('triage success-recovered routing (M2.2)', () => {
+  function flailed(sessionId: string): ReturnType<typeof newAggregate> {
+    const aggregate = newAggregate(sessionId, 0)
+    observeToolCall(aggregate, { name: 'edit', callId: 'c1', arguments: '{"force":false}' })
+    observeToolResult(aggregate, { callId: 'c1', error: { name: 'E_TIMEOUT' } })
+    observeToolCall(aggregate, { name: 'edit', callId: 'c2', arguments: '{"force":true}' })
+    aggregate.turnEndReason = JSON.stringify({ kind: 'completed' })
+    return aggregate
+  }
+
+  it('routes flail-then-succeed to track_a with a recovery reason', () => {
+    expect(triage(flailed('s'))).toEqual({
+      route: 'track_a',
+      reasons: ['tool-error:E_TIMEOUT', 'success-recovered'],
+    })
+  })
+
+  it('keeps recovered structural errors on track_b', () => {
+    const aggregate = newAggregate('s', 0)
+    observeToolCall(aggregate, { name: 'edit', callId: 'c1' })
+    observeToolResult(aggregate, { callId: 'c1', error: { name: 'SyntaxError' } })
+    observeToolCall(aggregate, { name: 'edit', callId: 'c2' })
+    aggregate.turnEndReason = JSON.stringify({ kind: 'completed' })
+    const verdict = triage(aggregate)
+    expect(verdict.route).toBe('track_b')
+    expect(verdict.reasons).toContain('structural-error:SyntaxError')
+  })
+
+  it('keeps unrecovered errors on track_b even when completed', () => {
+    const aggregate = newAggregate('s', 0)
+    observeToolCall(aggregate, { name: 'edit', callId: 'c1' })
+    observeToolResult(aggregate, { callId: 'c1', error: { name: 'E_TIMEOUT' } })
+    aggregate.turnEndReason = JSON.stringify({ kind: 'completed' })
+    expect(triage(aggregate).route).toBe('track_b')
+  })
+
+  it('keeps error names without step evidence on track_b', () => {
+    const aggregate = newAggregate('s', 0)
+    observeToolError(aggregate, 'E_TIMEOUT')
+    aggregate.turnEndReason = JSON.stringify({ kind: 'completed' })
+    expect(triage(aggregate).route).toBe('track_b')
+  })
+
+  it('adds the steering count alongside the recovery reason', () => {
+    const aggregate = flailed('s')
+    aggregate.steeringEvents = 2
+    expect(triage(aggregate).reasons).toEqual(['tool-error:E_TIMEOUT', 'success-recovered', 'steering:2'])
   })
 })

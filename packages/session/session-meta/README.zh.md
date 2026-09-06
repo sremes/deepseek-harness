@@ -80,9 +80,11 @@ SELECT route, COUNT(*) FROM meta_sessions GROUP BY route;
 
 | 路由 | 触发条件 |
 |---|---|
-| `track_b` | 结构性错误（`SyntaxError`、`JSONParseError`、`ZodError`、`ERR_REGEX_TIMEOUT`、`ERR_TOOL_SCHEMA_VIOLATION`）、任意 `agent/error`、其他工具错误，或未 `completed` 的 turn 结束。 |
-| `track_a` | 人工转向：首条 assistant 消息之后到达的 `user` 源 `user/message`（开场提示是任务，不是纠正）。 |
+| `track_b` | 结构性错误（`SyntaxError`、`JSONParseError`、`ZodError`、`ERR_REGEX_TIMEOUT`、`ERR_TOOL_SCHEMA_VIOLATION`）、任意 `agent/error`、未恢复的工具错误，或未 `completed` 的 turn 结束。 |
+| `track_a` | 人工转向（首条 assistant 消息之后的 `user` 源 `user/message`），或已证实的恢复：`completed` 回合中每个失败步骤都有后续同工具成功步骤（`success-recovered`，无论有无转向）。 |
 | `no_op` | 无上述信号。 |
+
+结果 call id 从顶层 `callId`、`message.callId`、`message.source.callId` 或内容块 `toolCallId`（线上 `dsh-tool-result` 形态）读取；无步骤证据的错误名仍计数，但永不证明恢复。
 
 消息源非人工的收件箱事件（`agent-message` 中转、工具帧、插件通告）
 永不视为转向。
