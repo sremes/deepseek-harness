@@ -201,14 +201,22 @@ function reasoningInfo(
   }
 }
 
-/** Merge deployment headers while removing case-insensitive attribution collisions. */
-function requestHeaders(headers: Readonly<Record<string, string>> | undefined): Record<string, string> {
+/**
+ * Merge deployment headers while removing case-insensitive attribution collisions.
+ * A session binding adds one dynamic header (for example OpenCode Go's
+ * `x-opencode-session` affinity); it never overrides attribution names.
+ */
+function requestHeaders(
+  headers: Readonly<Record<string, string>> | undefined,
+  session: { name: string; id: string } | undefined,
+): Record<string, string> {
   const attribution = attributionHeaders()
   const reserved = new Set(Object.keys(attribution).map(name => name.toLowerCase()))
-  return {
-    ...Object.fromEntries(Object.entries(headers ?? {}).filter(([name]) => !reserved.has(name.toLowerCase()))),
-    ...attribution,
-  }
+  const deployment = Object.fromEntries(Object.entries(headers ?? {}).filter(([name]) => !reserved.has(name.toLowerCase())))
+  const affinity = session === undefined || reserved.has(session.name.toLowerCase())
+    ? {}
+    : { [session.name]: session.id }
+  return { ...deployment, ...attribution, ...affinity }
 }
 
 /**
@@ -379,8 +387,14 @@ export class PiAiAdapter extends LlmAdapter {
         ...options.sessionId === undefined ? {} : { sessionId: String(options.sessionId) },
         signal: watchdog.signal,
         // Profile headers are deployment-owned; attribution names are
-        // Harness-owned and therefore win collisions.
-        headers: requestHeaders(profile.headers),
+        // Harness-owned and therefore win collisions. The loop session id
+        // rides the configured affinity header when the route names one.
+        headers: requestHeaders(
+          profile.headers,
+          profile.sessionIdHeader === undefined || options.sessionId === undefined
+            ? undefined
+            : { name: profile.sessionIdHeader, id: String(options.sessionId) },
+        ),
       })
       const iterator = toStreamChunks(events, model.contextWindow, options.signal)[Symbol.asyncIterator]()
       let exhausted = false

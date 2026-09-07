@@ -123,6 +123,44 @@ describe('PiAiAdapter provider routing', () => {
     expect(server.headers[0]?.['user-agent']).toBe(userAgent())
   })
 
+  it('sends the loop session id under the configured session header', async () => {
+    const server = await mockServer([{ events: textEvents }])
+    const ctx = await harness(server.url, { sessionIdHeader: 'x-opencode-session' })
+    await assemble(ctx, {
+      model: 'deepseek-v4-flash',
+      messages: [],
+      sessionId: 'session-for-affinity' as never,
+    })
+    expect(server.headers[0]?.['x-opencode-session']).toBe('session-for-affinity')
+  })
+
+  it('omits the session header without configuration or without a session id', async () => {
+    const noConfig = await mockServer([{ events: textEvents }])
+    await assemble(await harness(noConfig.url), {
+      model: 'deepseek-v4-flash',
+      messages: [],
+      sessionId: 'session-nowhere-to-go' as never,
+    })
+    expect(noConfig.headers[0]).not.toHaveProperty('x-opencode-session')
+    const noSession = await mockServer([{ events: textEvents }])
+    await assemble(await harness(noSession.url, { sessionIdHeader: 'x-opencode-session' }), {
+      model: 'deepseek-v4-flash',
+      messages: [],
+    })
+    expect(noSession.headers[0]).not.toHaveProperty('x-opencode-session')
+  })
+
+  it('keeps attribution winning over a session header collision', async () => {
+    const server = await mockServer([{ events: textEvents }])
+    const ctx = await harness(server.url, { sessionIdHeader: 'User-Agent' })
+    await assemble(ctx, {
+      model: 'deepseek-v4-flash',
+      messages: [],
+      sessionId: 'session-collision' as never,
+    })
+    expect(server.headers[0]?.['user-agent']).toBe(userAgent())
+  })
+
   it('forwards common stream options and profile reasoning', async () => {
     const server = await mockServer([{ events: textEvents }])
     const ctx = await harness(server.url, {

@@ -146,6 +146,15 @@ export interface PiAiProviderProfile {
   defaultInput?: PiAiModality[]
   /** Provider request headers, validated against Fetch when the profile resolves; Harness attribution wins reserved names. */
   headers?: Record<string, string>
+  /**
+   * Header name carrying the loop session id on every request of this route.
+   * OpenCode Go requires `x-opencode-session` for session affinity (without
+   * it the relay may answer 400 `Model is unavailable`); other providers
+   * ignore unknown headers. Omission sends nothing — the value is always the
+   * stamped loop session id, never configuration text. A name colliding with
+   * Harness attribution loses to attribution, as with {@link headers}.
+   */
+  sessionIdHeader?: string
   /** Provider-neutral pi-ai reasoning level. */
   reasoning?: ModelThinkingLevel
   /** Token budgets used by reasoning providers that support them. */
@@ -323,6 +332,7 @@ const profile = z.object({
   defaultMaxTokens: z.number().step(1).min(1).default(DEFAULT_MAX_TOKENS),
   defaultInput: z.array(z.union(MODALITIES)).default([...DEFAULT_INPUT]),
   headers: z.dict(z.string()),
+  sessionIdHeader: z.string(),
   reasoning: z.union(THINKING_LEVELS),
   thinkingBudgets,
   cacheRetention: z.union(['none', 'short', 'long']),
@@ -415,6 +425,9 @@ export function resolveProfiles(
       throw new Error(`llm-pi-ai: provider "${provider}" has an empty displayName`)
     }
     assertValidHeaders(provider, source.headers)
+    if (source.sessionIdHeader !== undefined) {
+      assertValidHeaders(provider, { [source.sessionIdHeader]: 'session' })
+    }
     const streamIdleTimeoutMs = source.streamIdleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS
     if (!Number.isFinite(streamIdleTimeoutMs)
       || streamIdleTimeoutMs <= 0
