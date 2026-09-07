@@ -145,6 +145,10 @@ Comments and docs state complete contracts and context, not reasoning transcript
 
 Docs accompany every code change: update affected README and JSDoc contracts together. Routine bilingual work follows [docs/AGENTS.md](docs/AGENTS.md); only explicit user invocation may run `dsh-translate-docs`. Current-state prose, one physical line per paragraph, one home per fact, and word budgets live there.
 
+## Fork divergence: EN-only READMEs for touched packages
+
+This fork does not maintain Chinese mirrors for `packages/session/session-meta` and `packages/llm/llm-pi-ai`: both are excluded in `scripts/translation-pairing.manifest.json` and their `README.zh.md` files are deleted. Worker briefs for these packages must say "EN README only, do not touch any .zh.md". Neighbor ZH files link to the EN files; if the pairing gate flags a diverged link after a deletion, repoint the link at the EN file and re-record with `verify-translation-pairing --write <EN-paths...>`.
+
 ## Editing these instructions
 
 `CLAUDE.md` symlinks `AGENTS.md` at root and `packages/`; edit the real file. Keep each rule self-contained while linking high-level docs. Condense when clarity survives; raise a `verify-doc-budgets` ceiling when the required content genuinely needs more space.
