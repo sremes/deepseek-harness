@@ -62,6 +62,24 @@ function okLlm(): EvaluatorLlm {
   }
 }
 
+/** Evaluator output whose draft trips L0 bans (PR ref + negative-capability claim). */
+function l0FailingLlm(): EvaluatorLlm {
+  const bad = JSON.stringify({
+    intent: 'Reuse the incident helper',
+    forbidden: [],
+    prescribed: ['Reuse the helper from PR #12345 because the old tool is unusable'],
+    trigger_signature: 'incident-helper-reuse',
+    trigger_conditions: 'Use when the incident helper applies',
+    platform: 'dsh-headless',
+  })
+  const chunks = textChunks(bad, { inputTokens: 5, outputTokens: 6 })
+  return {
+    async *stream(): AsyncIterable<StreamChunk> {
+      yield* chunks
+    },
+  }
+}
+
 describe('startOfUtcDay', () => {
   it('truncates to UTC midnight', () => {
     expect(startOfUtcDay(Date.UTC(2026, 8, 4, 12, 34, 56))).toBe(Date.UTC(2026, 8, 4))
@@ -181,5 +199,18 @@ describe('evaluateTrackASession', () => {
     const outcome = await evaluateTrackASession(deps(home, okLlm(), []), { ...CONFIG, skillsDir: skills }, aggregate)
     expect(outcome.decision).toBe('draft-written')
     expect(existsSync(join(skills, 'destructive-path-confirm', 'SKILL.md'))).toBe(true)
+  })
+
+  it('vetoes L0-failing drafts before any file lands and ledgers the spend', async () => {
+    const home = await freshHome()
+    const skills = join(home, 'skills')
+    const aggregate = makeAggregate('s1')
+    aggregate.steeringTexts.push('not like that')
+    const logs: string[] = []
+    const outcome = await evaluateTrackASession(deps(home, l0FailingLlm(), logs), { ...CONFIG, skillsDir: skills }, aggregate)
+    expect(outcome).toEqual({ decision: 'l0-rejected', draftSlug: null })
+    expect(existsSync(join(skills, 'incident-helper-reuse', 'SKILL.md'))).toBe(false)
+    expect(logs.join('\n')).toMatch(/L0 contract/)
+    expect(store?.countEvaluationsSince(0)).toBe(1)
   })
 })

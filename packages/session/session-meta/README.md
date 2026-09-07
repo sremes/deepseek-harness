@@ -127,9 +127,10 @@ versioned (`PRAGMA user_version = 1`); mismatches throw instead of migrating.
 - `src/triage.ts` — pure deterministic router over `SessionAggregate`; every branch unit-tested without cordis.
 - `src/projection.ts` — per-session state projection Σ (args, digests, recovery marks, consulted skills, outcome).
 - `src/evaluator.ts` — budget-capped Flash call over Σ; schema-validated proposals.
-- `src/orchestrate.ts` — offline loop driver (budget, steering files, gated drafts).
+- `src/orchestrate.ts` — offline loop driver (budget, steering files, L0 gate, gated drafts).
 - `src/steering.ts` — headless correction-record ingest.
 - `src/writer.ts` — gated `SKILL.md` drafts (`disable-model-invocation`, `whenToUse`).
+- `src/l0.ts` — M3 L0 contract gate: deterministic veto over a rendered draft (frontmatter, metadata, sections, mechanizable bans); the orchestrator ledgers `l0-rejected` without writing.
 - `src/redact.ts` — secret scrubbing and bounds.
 - `src/store.ts` — `node:sqlite` meta store (`MetaStore`, `META_SCHEMA_VERSION`).
 - `src/types.ts` — types only.

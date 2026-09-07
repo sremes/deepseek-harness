@@ -10,13 +10,14 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync } from 'no
 import { join } from 'node:path'
 import type { EvaluatorLlm, EvaluatorRoute } from './evaluator.ts'
 import { runEvaluator } from './evaluator.ts'
+import { evaluateL0 } from './l0.ts'
 import { projectSession as buildProjection } from './projection.ts'
 import { redactString } from './redact.ts'
 import { parseSteeringFile, processedSteeringDir, steeringFilePath } from './steering.ts'
 import { hasRecoveredErrors } from './triage.ts'
 import type { MetaStore } from './store.ts'
 import type { EvaluatorProposal, SessionAggregate, SteeringRecord } from './types.ts'
-import { writeSkillDraft } from './writer.ts'
+import { renderDraft, slugify, writeSkillDraft } from './writer.ts'
 
 /** Whether a steering file exists for one session (flush-path pre-check). */
 export function hasSteeringFile(home: string, sessionId: string): boolean {
@@ -143,6 +144,16 @@ export async function evaluateTrackASession(
     return { decision: 'llm-error', draftSlug: null }
   }
   mkdirSync(config.skillsDir, { recursive: true })
+  const provenance = { sessions: [aggregate.sessionId], mode: aggregate.origin ?? 'unknown' } as const
+  // M3 L0: cheapest layer first — render in memory and veto before any file
+  // lands. The preview slug only feeds the `name:` field (writeSkillDraft
+  // may add a numeric suffix); emptiness is unaffected by the suffix.
+  const gate = evaluateL0(renderDraft(result.proposal, provenance, slugify(result.proposal.triggerSignature)))
+  if (!gate.pass) {
+    deps.store.recordEvaluation({ ts: now, sessionId: aggregate.sessionId, inputTokens: result.inputTokens, outputTokens: result.outputTokens, decision: 'l0-rejected', draftSlug: null })
+    deps.log(`session-meta: draft failed L0 contract for ${aggregate.sessionId}: ${gate.violations.join('; ')}`)
+    return { decision: 'l0-rejected', draftSlug: null }
+  }
   const draft = writeSkillDraft(config.skillsDir, result.proposal, {
     sessions: [aggregate.sessionId],
     mode: aggregate.origin ?? 'unknown',
