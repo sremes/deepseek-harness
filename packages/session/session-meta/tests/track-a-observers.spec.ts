@@ -183,6 +183,7 @@ describe('resolveEvaluation', () => {
       maxOutputTokens: 2000,
       timeoutMs: 120000,
       maxCallsPerDay: 1,
+      maxReplaysPerDay: 8,
       minEvalToolCalls: 3,
       earlySteeringMessages: 1,
       skillsDir: '/home/skills',

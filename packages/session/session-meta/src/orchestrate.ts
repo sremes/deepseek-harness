@@ -6,14 +6,17 @@
  * and ledgered — the session pipeline never throws into flush/dispose.
  */
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import type { EvaluatorLlm, EvaluatorRoute } from './evaluator.ts'
 import { runEvaluator } from './evaluator.ts'
+import { judgePair } from './judge.ts'
 import { evaluateL0 } from './l0.ts'
 import { evaluateL1 } from './l1.ts'
 import { projectSession as buildProjection } from './projection.ts'
 import { redactString } from './redact.ts'
+import type { ReplayOutcome, ReplayRunner } from './replay.ts'
+import { buildReplaySummary, compareForHarm } from './replay.ts'
 import { parseSteeringFile, processedSteeringDir, steeringFilePath } from './steering.ts'
 import { hasRecoveredErrors } from './triage.ts'
 import type { MetaStore } from './store.ts'
@@ -29,6 +32,7 @@ export function hasSteeringFile(home: string, sessionId: string): boolean {
 export interface EvaluationConfig extends EvaluatorRoute {
   readonly enabled: boolean
   readonly maxCallsPerDay: number
+  readonly maxReplaysPerDay: number
   readonly minEvalToolCalls: number
   readonly earlySteeringMessages: number
   readonly skillsDir: string
@@ -39,6 +43,7 @@ export interface EvaluationDeps {
   readonly store: MetaStore
   readonly home: string
   readonly llm: EvaluatorLlm | undefined
+  readonly replayRunner?: ReplayRunner | undefined
   readonly now: () => number
   readonly log: (message: string) => void
 }
@@ -122,7 +127,8 @@ export async function evaluateTrackASession(
     deps.log(`session-meta: evaluator daily cap reached, skipping ${aggregate.sessionId}`)
     return { decision: 'budget-refused', draftSlug: null }
   }
-  if (deps.llm === undefined) {
+  const llm = deps.llm
+  if (llm === undefined) {
     deps.log(`session-meta: skipping evaluator for ${aggregate.sessionId} (no llm service)`)
     return { decision: 'skipped:no-llm', draftSlug: null }
   }
@@ -135,7 +141,7 @@ export async function evaluateTrackASession(
   let result: { proposal: EvaluatorProposal; inputTokens: number; outputTokens: number }
   try {
     result = await runEvaluator(
-      deps.llm,
+      llm,
       config,
       { projection, steering: redactedSteering, knownSignatures: listKnownSignatures(config.skillsDir) },
     )
@@ -167,6 +173,52 @@ export async function evaluateTrackASession(
     sessions: [aggregate.sessionId],
     mode: aggregate.origin ?? 'unknown',
   })
+  // M3 L2: motivating-task replay (Plan-V1 §4.1) — run the opening task
+  // with the draft mounted and without it, then veto on harm or on the
+  // pairwise judge. Every skip preserves the pre-L2 behavior (promotion
+  // proceeds): budget exhaustion skips instead of blocking because no
+  // re-drive queue exists yet — a blocked draft would die unpromoted
+  // forever. Judge spend is not ledgered this slice: judgePair returns no
+  // token usage. L3 stays a later slice.
+  const replayRunner = deps.replayRunner
+  if (replayRunner === undefined) {
+    deps.log(`session-meta: l2 skipped (no replay runner) for ${aggregate.sessionId}`)
+  } else {
+    const taskInput = aggregate.openingTask ?? projection.goal
+    if (taskInput.trim() === '') {
+      deps.log(`session-meta: l2 skipped (no task input) for ${aggregate.sessionId}`)
+    } else if (deps.store.countReplayRunsSince(startOfUtcDay(now)) + 2 > config.maxReplaysPerDay) {
+      deps.log(`session-meta: l2 skipped (replay budget) for ${aggregate.sessionId}`)
+    } else {
+      let candidate: ReplayOutcome
+      let baseline: ReplayOutcome
+      try {
+        candidate = await replayRunner.run(taskInput, { skillOverlay: draft.dir })
+        baseline = await replayRunner.run(taskInput)
+        deps.store.recordReplayRun(now)
+        deps.store.recordReplayRun(now)
+      } catch (error) {
+        rmSync(draft.dir, { recursive: true, force: true })
+        deps.store.recordEvaluation({ ts: now, sessionId: aggregate.sessionId, inputTokens: result.inputTokens, outputTokens: result.outputTokens, decision: 'l2-error', draftSlug: null })
+        deps.log(`session-meta: replay failed for ${aggregate.sessionId}: ${String(error)}`)
+        return { decision: 'l2-error', draftSlug: null }
+      }
+      const harm = compareForHarm(candidate, baseline)
+      if (!harm.notWorse) {
+        rmSync(draft.dir, { recursive: true, force: true })
+        deps.store.recordEvaluation({ ts: now, sessionId: aggregate.sessionId, inputTokens: result.inputTokens, outputTokens: result.outputTokens, decision: 'l2-rejected', draftSlug: null })
+        deps.log(`session-meta: draft failed L2 replay for ${aggregate.sessionId}: ${harm.reasons.join('; ')}`)
+        return { decision: 'l2-rejected', draftSlug: null }
+      }
+      const verdict = await judgePair(llm, config, buildReplaySummary(candidate), buildReplaySummary(baseline))
+      if (!verdict.pass) {
+        rmSync(draft.dir, { recursive: true, force: true })
+        deps.store.recordEvaluation({ ts: now, sessionId: aggregate.sessionId, inputTokens: result.inputTokens, outputTokens: result.outputTokens, decision: 'l2-rejected', draftSlug: null })
+        deps.log(`session-meta: draft failed L2 judge for ${aggregate.sessionId}: ${verdict.grounds.join('; ')}`)
+        return { decision: 'l2-rejected', draftSlug: null }
+      }
+    }
+  }
   // M3 promotion wiring (Plan-V1 §§3.4/4.1): an L0+L1-passing draft enters
   // the registry on probation at 0.40. The probation→live transition stays
   // unwired until L2–L4 verdicts exist to justify it.

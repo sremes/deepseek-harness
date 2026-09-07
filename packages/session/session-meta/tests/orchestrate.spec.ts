@@ -15,6 +15,8 @@ import {
 } from '../src/orchestrate.ts'
 import { steeringFilePath } from '../src/steering.ts'
 import { MetaStore } from '../src/store.ts'
+import { FakeReplayRunner } from '../src/replay.ts'
+import type { ReplayOutcome, ReplayRunner } from '../src/replay.ts'
 import { makeAggregate, textChunks, VALID_PROPOSAL_JSON } from './helpers.ts'
 
 const CONFIG: EvaluationConfig = {
@@ -25,6 +27,7 @@ const CONFIG: EvaluationConfig = {
   maxOutputTokens: 2000,
   timeoutMs: 5000,
   maxCallsPerDay: 1,
+  maxReplaysPerDay: 8,
   minEvalToolCalls: 3,
   earlySteeringMessages: 1,
   skillsDir: '',
@@ -48,9 +51,46 @@ async function freshHome(): Promise<string> {
   return home
 }
 
-function deps(home: string, llm: EvaluatorLlm | undefined, logs: string[]) {
+function deps(home: string, llm: EvaluatorLlm | undefined, logs: string[], runner?: ReplayRunner) {
   if (store === undefined) throw new Error('store missing')
-  return { store, home, llm, now: () => Date.UTC(2026, 8, 4, 12, 0, 0), log: (message: string) => { logs.push(message) } }
+  return { store, home, llm, replayRunner: runner, now: () => Date.UTC(2026, 8, 4, 12, 0, 0), log: (message: string) => { logs.push(message) } }
+}
+
+/** Aggregate carrying steering plus a replayable opening task. */
+function l2Aggregate(sessionId: string) {
+  const aggregate = makeAggregate(sessionId)
+  aggregate.steeringTexts.push('not like that')
+  aggregate.openingTask = 'Confirm the destructive path before running it'
+  return aggregate
+}
+
+/** Replay outcome baseline; tests override the fields their veto needs. */
+function replayOutcome(overrides?: Partial<ReplayOutcome>): ReplayOutcome {
+  return {
+    completed: true,
+    turnEnd: 'completed',
+    steeringCount: 0,
+    toolCalls: 5,
+    summary: 'Ran the checks; all green.',
+    ...overrides,
+  }
+}
+
+/** Fake llm serving the valid proposal first, then two candidate-preferring judge verdicts. */
+function judgePassLlm(): EvaluatorLlm {
+  const runs = [
+    textChunks(VALID_PROPOSAL_JSON, { inputTokens: 5, outputTokens: 6 }),
+    textChunks(JSON.stringify({ verdict: 'prefer-a', grounds: 'Candidate retried `path` and the result shows ok' })),
+    textChunks(JSON.stringify({ verdict: 'prefer-b', grounds: 'Candidate retried `path` and the result shows ok' })),
+  ]
+  let calls = 0
+  return {
+    async *stream(): AsyncIterable<StreamChunk> {
+      const chunks = runs[calls] ?? []
+      calls += 1
+      yield* chunks
+    },
+  }
 }
 
 function okLlm(): EvaluatorLlm {
@@ -243,5 +283,83 @@ describe('evaluateTrackASession', () => {
     expect(existsSync(join(skills, 'double-check-habit', 'SKILL.md'))).toBe(false)
     expect(logs.join('\n')).toMatch(/L1 self-test/)
     expect(store?.countEvaluationsSince(0)).toBe(1)
+  })
+
+  it('promotes L2-passing drafts and records both replay runs', async () => {
+    const home = await freshHome()
+    const skills = join(home, 'skills')
+    const runner = new FakeReplayRunner([replayOutcome({}), replayOutcome({})])
+    const logs: string[] = []
+    const outcome = await evaluateTrackASession(deps(home, judgePassLlm(), logs, runner), { ...CONFIG, skillsDir: skills }, l2Aggregate('s1'))
+    expect(outcome).toEqual({ decision: 'draft-written', draftSlug: 'destructive-path-confirm' })
+    expect(existsSync(join(skills, 'destructive-path-confirm', 'SKILL.md'))).toBe(true)
+    expect(store?.countReplayRunsSince(0)).toBe(2)
+    expect(store?.countEvaluationsSince(0)).toBe(1)
+  })
+
+  it('vetoes L2-harmed drafts, removes the draft dir, and ledgers the spend', async () => {
+    const home = await freshHome()
+    const skills = join(home, 'skills')
+    const runner = new FakeReplayRunner([
+      replayOutcome({ completed: false, turnEnd: 'error' }),
+      replayOutcome({ completed: true, turnEnd: 'completed' }),
+    ])
+    const logs: string[] = []
+    const outcome = await evaluateTrackASession(deps(home, judgePassLlm(), logs, runner), { ...CONFIG, skillsDir: skills }, l2Aggregate('s1'))
+    expect(outcome).toEqual({ decision: 'l2-rejected', draftSlug: null })
+    expect(existsSync(join(skills, 'destructive-path-confirm'))).toBe(false)
+    expect(logs.join('\n')).toMatch(/L2 replay/)
+    expect(store?.countEvaluationsSince(0)).toBe(1)
+  })
+
+  it('vetoes L2 judge failures, removes the draft dir, and ledgers the spend', async () => {
+    const home = await freshHome()
+    const skills = join(home, 'skills')
+    const runner = new FakeReplayRunner([replayOutcome({}), replayOutcome({})])
+    const logs: string[] = []
+    const outcome = await evaluateTrackASession(deps(home, okLlm(), logs, runner), { ...CONFIG, skillsDir: skills }, l2Aggregate('s1'))
+    expect(outcome).toEqual({ decision: 'l2-rejected', draftSlug: null })
+    expect(existsSync(join(skills, 'destructive-path-confirm'))).toBe(false)
+    expect(logs.join('\n')).toMatch(/L2 judge/)
+    expect(store?.countEvaluationsSince(0)).toBe(1)
+  })
+
+  it('ledgers replay failures as l2-error and removes the draft dir', async () => {
+    const home = await freshHome()
+    const skills = join(home, 'skills')
+    const runner = new FakeReplayRunner([])
+    const logs: string[] = []
+    const outcome = await evaluateTrackASession(deps(home, okLlm(), logs, runner), { ...CONFIG, skillsDir: skills }, l2Aggregate('s1'))
+    expect(outcome).toEqual({ decision: 'l2-error', draftSlug: null })
+    expect(existsSync(join(skills, 'destructive-path-confirm'))).toBe(false)
+    expect(logs.join('\n')).toMatch(/replay failed/)
+    expect(store?.countEvaluationsSince(0)).toBe(1)
+  })
+
+  it('skips L2 over the replay budget and still promotes', async () => {
+    const home = await freshHome()
+    const skills = join(home, 'skills')
+    const runner = new FakeReplayRunner([replayOutcome({}), replayOutcome({})])
+    const logs: string[] = []
+    const outcome = await evaluateTrackASession(deps(home, okLlm(), logs, runner), { ...CONFIG, skillsDir: skills, maxReplaysPerDay: 1 }, l2Aggregate('s1'))
+    expect(outcome).toEqual({ decision: 'draft-written', draftSlug: 'destructive-path-confirm' })
+    expect(existsSync(join(skills, 'destructive-path-confirm', 'SKILL.md'))).toBe(true)
+    expect(store?.countReplayRunsSince(0)).toBe(0)
+    expect(logs.join('\n')).toMatch(/l2 skipped \(replay budget\)/)
+  })
+
+  it('skips L2 without task input and still promotes', async () => {
+    const home = await freshHome()
+    const skills = join(home, 'skills')
+    const runner = new FakeReplayRunner([replayOutcome({}), replayOutcome({})])
+    const aggregate = makeAggregate('s1')
+    aggregate.steeringTexts.push('not like that')
+    aggregate.openingTask = '   '
+    const logs: string[] = []
+    const outcome = await evaluateTrackASession(deps(home, okLlm(), logs, runner), { ...CONFIG, skillsDir: skills }, aggregate)
+    expect(outcome).toEqual({ decision: 'draft-written', draftSlug: 'destructive-path-confirm' })
+    expect(existsSync(join(skills, 'destructive-path-confirm', 'SKILL.md'))).toBe(true)
+    expect(store?.countReplayRunsSince(0)).toBe(0)
+    expect(logs.join('\n')).toMatch(/l2 skipped \(no task input\)/)
   })
 })

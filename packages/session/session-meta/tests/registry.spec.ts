@@ -1,8 +1,8 @@
 /**
  * Skill-registry store slice: promotion lifecycle persistence (Plan-V1 M3,
  * §§3.4/4.1/4.2). Covers every branch of `recordPromotion`,
- * `recordLive`, `recordApplication`, `applyConfidenceDelta`, and `getSkill`, plus the
- * v2 → v3 additive migration.
+ * `recordLive`, `recordApplication`, `applyConfidenceDelta`, and `getSkill`, the
+ * replay-run budget ledger, plus the v2 → v3 and v3 → v4 migrations.
  */
 
 import { mkdtemp, rm } from 'node:fs/promises'
@@ -213,6 +213,51 @@ describe('skill-registry migration', () => {
         raw.close()
       }
     } finally {
+      if (dir !== undefined) await rm(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('replay runs', () => {
+  it('counts nothing on a fresh store', () => {
+    expect(freshStore().countReplayRunsSince(0)).toBe(0)
+  })
+
+  it('records runs and counts them inside the window only', () => {
+    const db = freshStore()
+    db.recordReplayRun(Date.UTC(2026, 8, 4, 6, 0, 0))
+    db.recordReplayRun(Date.UTC(2026, 8, 4, 12, 0, 0))
+    expect(db.countReplayRunsSince(Date.UTC(2026, 8, 4))).toBe(2)
+    expect(db.countReplayRunsSince(Date.UTC(2026, 8, 4, 12, 0, 0))).toBe(1)
+    expect(db.countReplayRunsSince(Date.UTC(2026, 8, 5))).toBe(0)
+  })
+
+  it('migrates a v3 database forward and stamps v4', async () => {
+    let dir: string | undefined
+    try {
+      dir = await mkdtemp(join(tmpdir(), 'dsh-meta-v3-'))
+      const path = join(dir, 'meta.db')
+      const legacy = new DatabaseSync(path)
+      legacy.exec(
+        'CREATE TABLE meta_sessions(id TEXT PRIMARY KEY); CREATE TABLE evaluator_ledger(ts INTEGER NOT NULL); CREATE TABLE skill_registry(trigger_signature TEXT PRIMARY KEY); PRAGMA user_version = 3;',
+      )
+      legacy.close()
+      store = new MetaStore({ dbPath: path })
+      const db = store
+      db.recordReplayRun(Date.UTC(2026, 8, 4, 12, 0, 0))
+      expect(db.countReplayRunsSince(0)).toBe(1)
+      db.close()
+      store = undefined
+      const raw = new DatabaseSync(path)
+      try {
+        const version = raw.prepare('PRAGMA user_version').get() as { user_version: number }
+        expect(version.user_version).toBe(META_SCHEMA_VERSION)
+      } finally {
+        raw.close()
+      }
+    } finally {
+      store?.close()
+      store = undefined
       if (dir !== undefined) await rm(dir, { recursive: true, force: true })
     }
   })

@@ -65,6 +65,8 @@ export interface EvaluatorInputConfig {
   maxOutputTokens?: number
   timeoutMs?: number
   maxCallsPerDay?: number
+  /** Replay runs allowed per UTC day across L2/L3 (each L2 attempt costs two). Defaults to 8. */
+  maxReplaysPerDay?: number
   /** Sessions below this tool-call count need recovery or late steering to evaluate. */
   minEvalToolCalls?: number
   /** Steering at or before this many assistant messages counts as early (trivial). */
@@ -111,6 +113,7 @@ const EVALUATOR_DEFAULTS = {
   maxOutputTokens: 2000,
   timeoutMs: 120000,
   maxCallsPerDay: 1,
+  maxReplaysPerDay: 8,
   minEvalToolCalls: 3,
   earlySteeringMessages: 1,
 } as const
@@ -136,6 +139,7 @@ export function resolveEvaluation(config: Config, home: string): EvaluationConfi
     maxOutputTokens: raw.maxOutputTokens ?? EVALUATOR_DEFAULTS.maxOutputTokens,
     timeoutMs: raw.timeoutMs ?? EVALUATOR_DEFAULTS.timeoutMs,
     maxCallsPerDay: raw.maxCallsPerDay ?? EVALUATOR_DEFAULTS.maxCallsPerDay,
+    maxReplaysPerDay: raw.maxReplaysPerDay ?? EVALUATOR_DEFAULTS.maxReplaysPerDay,
     minEvalToolCalls: raw.minEvalToolCalls ?? EVALUATOR_DEFAULTS.minEvalToolCalls,
     earlySteeringMessages: raw.earlySteeringMessages ?? EVALUATOR_DEFAULTS.earlySteeringMessages,
     skillsDir: config.skillsDir === undefined || config.skillsDir === '' ? join(home, 'skills') : config.skillsDir,

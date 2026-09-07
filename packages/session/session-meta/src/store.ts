@@ -4,9 +4,10 @@
  * explicit `dbPath`, used by tests with `:memory:`).
  *
  * Schema v1 holds sessions + evidence. Schema v2 adds the evaluator budget
- * ledger; schema v3 adds the skill registry. v1/v2 databases migrate forward
- * automatically (new tables only — no row rewrites). Anything else throws
- * instead of migrating (repo stance).
+ * ledger; schema v3 adds the skill registry; schema v4 adds the replay-run
+ * budget ledger. v1/v2/v3 databases migrate forward automatically (new
+ * tables only — no row rewrites). Anything else throws instead of migrating
+ * (repo stance).
  *
  * @module @deepseek-ai/dsh-session-meta/store
  */
@@ -16,8 +17,8 @@ import { dirname } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import type { EvaluatorLedgerRow, MetaRoute, MetaSessionRow, SkillRegistryRow, SkillStatus } from './types.ts'
 
-/** On-disk schema version; v1/v2 migrate to v3, anything else throws. */
-export const META_SCHEMA_VERSION = 3
+/** On-disk schema version; v1/v2/v3 migrate to v4, anything else throws. */
+export const META_SCHEMA_VERSION = 4
 
 /** Pipeline-promoted skills start here (probation — one regression archives). */
 export const SKILL_PROBATION_CONFIDENCE = 0.4
@@ -74,6 +75,9 @@ CREATE TABLE IF NOT EXISTS skill_registry(
   status TEXT NOT NULL DEFAULT 'probation',
   updated_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS replay_runs(
+  ts INTEGER NOT NULL
+);
 `
 
 /** Narrow write model: one finished session plus its evidence rows. */
@@ -109,9 +113,9 @@ export class MetaStore {
     const version = this.db.prepare('PRAGMA user_version').get() as { user_version: number }
     if (version.user_version === 0) {
       this.db.exec(`PRAGMA user_version = ${META_SCHEMA_VERSION}`)
-    } else if (version.user_version === 1 || version.user_version === 2) {
-      // v1/v2 → v3 are additive only (evaluator_ledger, skill_registry,
-      // created above): stamp forward.
+    } else if (version.user_version === 1 || version.user_version === 2 || version.user_version === 3) {
+      // v1/v2/v3 → v4 are additive only (evaluator_ledger, skill_registry,
+      // replay_runs, created above): stamp forward.
       this.db.exec(`PRAGMA user_version = ${META_SCHEMA_VERSION}`)
     } else if (version.user_version !== META_SCHEMA_VERSION) {
       const seen = version.user_version
@@ -210,6 +214,27 @@ export class MetaStore {
   /** Evaluator calls recorded at or after `sinceTs` (UTC millis). */
   countEvaluationsSince(sinceTs: number): number {
     const row = this.db.prepare('SELECT COUNT(*) AS n FROM evaluator_ledger WHERE ts >= ?').get(sinceTs) as { n: number }
+    return row.n
+  }
+
+  /**
+   * Record one replay run at `ts` (the L2/L3 replay-run budget ledger).
+   *
+   * @param ts - run timestamp (UTC millis).
+   * @returns No return value; one row is appended.
+   */
+  recordReplayRun(ts: number): void {
+    this.db.prepare('INSERT INTO replay_runs(ts) VALUES(?)').run(ts)
+  }
+
+  /**
+   * Replay runs recorded at or after `sinceTs` (UTC millis).
+   *
+   * @param sinceTs - window start (UTC millis).
+   * @returns the replay-run count in the window.
+   */
+  countReplayRunsSince(sinceTs: number): number {
+    const row = this.db.prepare('SELECT COUNT(*) AS n FROM replay_runs WHERE ts >= ?').get(sinceTs) as { n: number }
     return row.n
   }
 

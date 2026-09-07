@@ -29,10 +29,10 @@ export interface ReplayRunner {
    * Run one replay of the given task input.
    *
    * @param input - task input to replay.
-   * @param options - optional run options carrying the session id.
+   * @param options - optional run options carrying the session id and the candidate skill overlay.
    * @returns the replay outcome.
    */
-  run(input: string, options?: { sessionId?: string }): Promise<ReplayOutcome>
+  run(input: string, options?: { sessionId?: string; skillOverlay?: string }): Promise<ReplayOutcome>
 }
 
 /**
@@ -56,10 +56,10 @@ export class FakeReplayRunner implements ReplayRunner {
    * Shift one scripted outcome off the queue.
    *
    * @param input - task input, ignored by the fake.
-   * @param options - optional run options, ignored by the fake.
+   * @param options - optional run options, ignored by the fake (including any skill overlay).
    * @returns the next scripted outcome.
    */
-  run(_input: string, _options?: { sessionId?: string }): Promise<ReplayOutcome> {
+  run(_input: string, _options?: { sessionId?: string; skillOverlay?: string }): Promise<ReplayOutcome> {
     const next = this.queue.shift()
     if (next === undefined) return Promise.reject(new Error('no scripted outcomes'))
     return Promise.resolve(next)

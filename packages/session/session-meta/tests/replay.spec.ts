@@ -22,6 +22,12 @@ describe('FakeReplayRunner', () => {
     await expect(runner.run('task', { sessionId: 's-1' })).resolves.toEqual(second)
   })
 
+  it('serves scripted outcomes when a skill overlay is passed', async () => {
+    const overlaid = outcomeFor({ summary: 'with skill' })
+    const runner = new FakeReplayRunner([overlaid])
+    await expect(runner.run('task', { skillOverlay: '/tmp/draft-skill' })).resolves.toEqual(overlaid)
+  })
+
   it('throws when the queue is empty', async () => {
     const runner = new FakeReplayRunner([])
     await expect(runner.run('task')).rejects.toThrow('no scripted outcomes')
