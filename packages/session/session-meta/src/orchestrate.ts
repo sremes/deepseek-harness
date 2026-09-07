@@ -167,6 +167,10 @@ export async function evaluateTrackASession(
     sessions: [aggregate.sessionId],
     mode: aggregate.origin ?? 'unknown',
   })
+  // M3 promotion wiring (Plan-V1 §§3.4/4.1): an L0+L1-passing draft enters
+  // the registry on probation at 0.40. The probation→live transition stays
+  // unwired until L2–L4 verdicts exist to justify it.
+  deps.store.recordPromotion(result.proposal.triggerSignature, draft.slug)
   deps.store.recordEvaluation({
     ts: now,
     sessionId: aggregate.sessionId,

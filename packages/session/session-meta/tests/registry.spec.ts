@@ -1,7 +1,7 @@
 /**
  * Skill-registry store slice: promotion lifecycle persistence (Plan-V1 M3,
  * §§3.4/4.1/4.2). Covers every branch of `recordPromotion`,
- * `recordApplication`, `applyConfidenceDelta`, and `getSkill`, plus the
+ * `recordLive`, `recordApplication`, `applyConfidenceDelta`, and `getSkill`, plus the
  * v2 → v3 additive migration.
  */
 
@@ -60,6 +60,40 @@ describe('recordPromotion', () => {
     db.applyConfidenceDelta('sig', 0.1)
     db.recordPromotion('sig', 'slug')
     expect(db.getSkill('sig')).toMatchObject({ slug: 'slug', confidence: 0.4, appliedCount: 0, status: 'probation' })
+  })
+})
+
+describe('recordLive', () => {
+  it('moves a probation row to live, keeping confidence and applications', () => {
+    const db = freshStore()
+    db.recordPromotion('sig', 'slug')
+    db.recordApplication('sig')
+    db.recordLive('sig')
+    expect(db.getSkill('sig')).toMatchObject({ slug: 'slug', confidence: 0.4, appliedCount: 1, status: 'live' })
+  })
+
+  it('ignores unknown signatures', () => {
+    const db = freshStore()
+    expect(() => {
+      db.recordLive('missing')
+    }).not.toThrow()
+    expect(db.getSkill('missing')).toBeUndefined()
+  })
+
+  it('leaves archived rows untouched', () => {
+    const db = freshStore()
+    db.recordPromotion('sig', 'slug')
+    db.applyConfidenceDelta('sig', -0.15)
+    db.recordLive('sig')
+    expect(db.getSkill('sig')).toMatchObject({ confidence: 0.3, status: 'archived' })
+  })
+
+  it('leaves live rows untouched (idempotent)', () => {
+    const db = freshStore()
+    db.recordPromotion('sig', 'slug')
+    db.recordLive('sig')
+    db.recordLive('sig')
+    expect(db.getSkill('sig')).toMatchObject({ slug: 'slug', confidence: 0.4, status: 'live' })
   })
 })
 

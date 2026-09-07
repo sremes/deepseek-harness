@@ -253,6 +253,19 @@ export class MetaStore {
   }
 
   /**
+   * Move a probation candidate to live (M3 promotion wiring — the L2–L4
+   * verdicts that justify the call land later; Plan-V1 §4.1).
+   *
+   * @param signature - The candidate `trigger_signature`.
+   * @returns No return value; unknown signatures and non-probation rows are ignored.
+   */
+  recordLive(signature: string): void {
+    this.db.prepare(
+      "UPDATE skill_registry SET status = 'live', updated_at = ? WHERE trigger_signature = ? AND status = 'probation'",
+    ).run(Date.now(), signature)
+  }
+
+  /**
    * Record one verified application of the skill behind a signature.
    *
    * @param signature - The candidate `trigger_signature`.
