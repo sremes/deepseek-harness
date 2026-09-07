@@ -10,7 +10,7 @@ import type { SessionAggregate } from '../src/types.ts'
 export const VALID_PROPOSAL_JSON = JSON.stringify({
   intent: 'Confirm destructive paths before running them',
   forbidden: ['Never run rm -rf on unconfirmed paths'],
-  prescribed: ['Echo the resolved path and wait for confirmation'],
+  prescribed: ['Echo the resolved `path` and wait for confirmation'],
   trigger_signature: 'destructive-path-confirm',
   trigger_conditions: 'Use when a task deletes or overwrites paths outside a scratch directory',
   platform: 'dsh-headless',

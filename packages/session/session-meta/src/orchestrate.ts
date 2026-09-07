@@ -11,6 +11,7 @@ import { join } from 'node:path'
 import type { EvaluatorLlm, EvaluatorRoute } from './evaluator.ts'
 import { runEvaluator } from './evaluator.ts'
 import { evaluateL0 } from './l0.ts'
+import { evaluateL1 } from './l1.ts'
 import { projectSession as buildProjection } from './projection.ts'
 import { redactString } from './redact.ts'
 import { parseSteeringFile, processedSteeringDir, steeringFilePath } from './steering.ts'
@@ -153,6 +154,14 @@ export async function evaluateTrackASession(
     deps.store.recordEvaluation({ ts: now, sessionId: aggregate.sessionId, inputTokens: result.inputTokens, outputTokens: result.outputTokens, decision: 'l0-rejected', draftSlug: null })
     deps.log(`session-meta: draft failed L0 contract for ${aggregate.sessionId}: ${gate.violations.join('; ')}`)
     return { decision: 'l0-rejected', draftSlug: null }
+  }
+  // M3 L1: the Prescribed Pattern must hold a mechanically checkable clause
+  // against the motivating session's tool calls. Same veto shape as L0.
+  const selfTest = evaluateL1(result.proposal, projection.steps.map(step => step.tool))
+  if (!selfTest.pass) {
+    deps.store.recordEvaluation({ ts: now, sessionId: aggregate.sessionId, inputTokens: result.inputTokens, outputTokens: result.outputTokens, decision: 'l1-rejected', draftSlug: null })
+    deps.log(`session-meta: draft failed L1 self-test for ${aggregate.sessionId}: ${selfTest.violations.join('; ')}`)
+    return { decision: 'l1-rejected', draftSlug: null }
   }
   const draft = writeSkillDraft(config.skillsDir, result.proposal, {
     sessions: [aggregate.sessionId],

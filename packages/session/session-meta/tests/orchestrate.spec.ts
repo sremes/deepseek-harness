@@ -62,6 +62,24 @@ function okLlm(): EvaluatorLlm {
   }
 }
 
+/** Evaluator output whose draft passes L0 but holds no checkable Prescribed clause. */
+function l1FailingLlm(): EvaluatorLlm {
+  const vague = JSON.stringify({
+    intent: 'Double-check before proceeding',
+    forbidden: [],
+    prescribed: ['Always double-check before proceeding'],
+    trigger_signature: 'double-check-habit',
+    trigger_conditions: 'Use when a task proceeds past an uncertain point',
+    platform: 'dsh-headless',
+  })
+  const chunks = textChunks(vague, { inputTokens: 5, outputTokens: 6 })
+  return {
+    async *stream(): AsyncIterable<StreamChunk> {
+      yield* chunks
+    },
+  }
+}
+
 /** Evaluator output whose draft trips L0 bans (PR ref + negative-capability claim). */
 function l0FailingLlm(): EvaluatorLlm {
   const bad = JSON.stringify({
@@ -211,6 +229,19 @@ describe('evaluateTrackASession', () => {
     expect(outcome).toEqual({ decision: 'l0-rejected', draftSlug: null })
     expect(existsSync(join(skills, 'incident-helper-reuse', 'SKILL.md'))).toBe(false)
     expect(logs.join('\n')).toMatch(/L0 contract/)
+    expect(store?.countEvaluationsSince(0)).toBe(1)
+  })
+
+  it('vetoes L0-passing but L1-failing drafts before any file lands and ledgers the spend', async () => {
+    const home = await freshHome()
+    const skills = join(home, 'skills')
+    const aggregate = makeAggregate('s1')
+    aggregate.steeringTexts.push('not like that')
+    const logs: string[] = []
+    const outcome = await evaluateTrackASession(deps(home, l1FailingLlm(), logs), { ...CONFIG, skillsDir: skills }, aggregate)
+    expect(outcome).toEqual({ decision: 'l1-rejected', draftSlug: null })
+    expect(existsSync(join(skills, 'double-check-habit', 'SKILL.md'))).toBe(false)
+    expect(logs.join('\n')).toMatch(/L1 self-test/)
     expect(store?.countEvaluationsSince(0)).toBe(1)
   })
 })
