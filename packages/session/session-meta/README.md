@@ -128,6 +128,7 @@ versioned (`PRAGMA user_version = 3`); mismatches throw instead of migrating.
 - `src/projection.ts` — per-session state projection Σ (args, digests, recovery marks, consulted skills, outcome).
 - `src/evaluator.ts` — budget-capped Flash call over Σ; schema-validated proposals.
 - `src/judge.ts` — M3 L4-lite blinded order-swapped pairwise judge; harm veto only, fails closed.
+- `src/replay.ts` — M3 L2/L3 replay-driver seam: outcome data, runner interface, scripted fake, harm veto, judge summary.
 - `src/orchestrate.ts` — offline loop driver (budget, steering files, L0 gate, gated drafts).
 - `src/steering.ts` — headless correction-record ingest.
 - `src/writer.ts` — gated `SKILL.md` drafts (`disable-model-invocation`, `whenToUse`).
