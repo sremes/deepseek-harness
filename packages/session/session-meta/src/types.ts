@@ -179,3 +179,16 @@ export interface EvaluatorLedgerRow {
   readonly decision: string
   readonly draftSlug: string | null
 }
+
+/** Lifecycle status of a skill-registry candidate (Plan-V1 §§3.4/4.2). */
+export type SkillStatus = 'probation' | 'live' | 'archived'
+
+/** Persisted `skill_registry` row shape, keyed by trigger signature. */
+export interface SkillRegistryRow {
+  readonly triggerSignature: string
+  readonly slug: string
+  readonly confidence: number
+  readonly appliedCount: number
+  readonly status: SkillStatus
+  readonly updatedAt: number
+}

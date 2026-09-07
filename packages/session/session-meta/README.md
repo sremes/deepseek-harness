@@ -118,7 +118,7 @@ Synchronous handlers only aggregate and buffer. SQLite writes happen on
 canonical session log is never rewritten — redaction applies to the meta
 copy only (PEM blocks, known token prefixes, `key=value` secrets, `cwd` →
 `$CWD`, home → `~`, per-string/array/depth bounds). On-disk schema is
-versioned (`PRAGMA user_version = 1`); mismatches throw instead of migrating.
+versioned (`PRAGMA user_version = 3`); mismatches throw instead of migrating.
 
 <details>
 <summary>Developer section: module map</summary>
@@ -132,7 +132,7 @@ versioned (`PRAGMA user_version = 1`); mismatches throw instead of migrating.
 - `src/writer.ts` — gated `SKILL.md` drafts (`disable-model-invocation`, `whenToUse`).
 - `src/l0.ts` — M3 L0 contract gate: deterministic veto over a rendered draft (frontmatter, metadata, sections, mechanizable bans); the orchestrator ledgers `l0-rejected` without writing.
 - `src/redact.ts` — secret scrubbing and bounds.
-- `src/store.ts` — `node:sqlite` meta store (`MetaStore`, `META_SCHEMA_VERSION`).
+- `src/store.ts` — `node:sqlite` meta store (`MetaStore`, `META_SCHEMA_VERSION`) plus the M3 skill registry (promotion lifecycle).
 - `src/types.ts` — types only.
 
 </details>

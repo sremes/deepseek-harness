@@ -1,0 +1,185 @@
+/**
+ * Skill-registry store slice: promotion lifecycle persistence (Plan-V1 M3,
+ * §§3.4/4.1/4.2). Covers every branch of `recordPromotion`,
+ * `recordApplication`, `applyConfidenceDelta`, and `getSkill`, plus the
+ * v2 → v3 additive migration.
+ */
+
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
+import { afterEach, describe, expect, it } from 'vitest'
+import { META_SCHEMA_VERSION, MetaStore } from '../src/store.ts'
+
+let store: MetaStore | undefined
+
+afterEach(() => {
+  store?.close()
+  store = undefined
+})
+
+function freshStore(): MetaStore {
+  store = new MetaStore({ dbPath: ':memory:' })
+  return store
+}
+
+describe('recordPromotion', () => {
+  it('inserts a probation candidate at 0.40 with zero applications', () => {
+    const db = freshStore()
+    db.recordPromotion('destructive-path-confirm', 'destructive-path-confirm')
+    expect(db.getSkill('destructive-path-confirm')).toMatchObject({
+      triggerSignature: 'destructive-path-confirm',
+      slug: 'destructive-path-confirm',
+      confidence: 0.4,
+      appliedCount: 0,
+      status: 'probation',
+    })
+    expect(db.getSkill('destructive-path-confirm')?.updatedAt).toEqual(expect.any(Number))
+  })
+
+  it('replaces a different slug for the same signature and resets lifecycle state', () => {
+    const db = freshStore()
+    db.recordPromotion('sig', 'old-slug')
+    db.recordApplication('sig')
+    db.applyConfidenceDelta('sig', 0.1)
+    db.recordPromotion('sig', 'new-slug')
+    expect(db.getSkill('sig')).toMatchObject({
+      triggerSignature: 'sig',
+      slug: 'new-slug',
+      confidence: 0.4,
+      appliedCount: 0,
+      status: 'probation',
+    })
+  })
+
+  it('re-probations the same slug, resetting confidence and applications', () => {
+    const db = freshStore()
+    db.recordPromotion('sig', 'slug')
+    db.recordApplication('sig')
+    db.applyConfidenceDelta('sig', 0.1)
+    db.recordPromotion('sig', 'slug')
+    expect(db.getSkill('sig')).toMatchObject({ slug: 'slug', confidence: 0.4, appliedCount: 0, status: 'probation' })
+  })
+})
+
+describe('recordApplication', () => {
+  it('increments applied_count per verified application', () => {
+    const db = freshStore()
+    db.recordPromotion('sig', 'slug')
+    db.recordApplication('sig')
+    db.recordApplication('sig')
+    expect(db.getSkill('sig')?.appliedCount).toBe(2)
+  })
+
+  it('ignores unknown signatures', () => {
+    const db = freshStore()
+    expect(() => {
+      db.recordApplication('missing')
+    }).not.toThrow()
+    expect(db.getSkill('missing')).toBeUndefined()
+  })
+})
+
+describe('getSkill', () => {
+  it('returns undefined for unknown signatures', () => {
+    expect(freshStore().getSkill('missing')).toBeUndefined()
+  })
+})
+
+describe('applyConfidenceDelta', () => {
+  it('adds explicit positives while keeping probation status', () => {
+    const db = freshStore()
+    db.recordPromotion('sig', 'slug')
+    db.applyConfidenceDelta('sig', 0.1)
+    expect(db.getSkill('sig')?.confidence).toBeCloseTo(0.5, 10)
+    expect(db.getSkill('sig')?.status).toBe('probation')
+  })
+
+  it('subtracts regressions that stay above the floor without archiving', () => {
+    const db = freshStore()
+    db.recordPromotion('sig', 'slug')
+    db.applyConfidenceDelta('sig', 0.1)
+    db.applyConfidenceDelta('sig', -0.15)
+    expect(db.getSkill('sig')?.confidence).toBeCloseTo(0.35, 10)
+    expect(db.getSkill('sig')?.status).toBe('probation')
+  })
+
+  it('clamps at the floor and archives a regression below it', () => {
+    const db = freshStore()
+    db.recordPromotion('sig', 'slug')
+    db.applyConfidenceDelta('sig', -0.15)
+    expect(db.getSkill('sig')).toMatchObject({ confidence: 0.3, status: 'archived' })
+  })
+
+  it('honours an explicit floor argument', () => {
+    const db = freshStore()
+    db.recordPromotion('sig', 'slug')
+    db.applyConfidenceDelta('sig', -0.05, 0.5)
+    expect(db.getSkill('sig')).toMatchObject({ confidence: 0.5, status: 'archived' })
+    db.recordPromotion('sig', 'slug')
+    db.applyConfidenceDelta('sig', 0.2, 0.5)
+    expect(db.getSkill('sig')?.confidence).toBeCloseTo(0.6, 10)
+    expect(db.getSkill('sig')?.status).toBe('probation')
+  })
+
+  it('ignores unknown signatures', () => {
+    const db = freshStore()
+    expect(() => {
+      db.applyConfidenceDelta('missing', -0.15)
+    }).not.toThrow()
+    expect(db.getSkill('missing')).toBeUndefined()
+  })
+})
+
+describe('skill-registry migration', () => {
+  it('migrates a v2 database forward and stamps v3', async () => {
+    let dir: string | undefined
+    try {
+      dir = await mkdtemp(join(tmpdir(), 'dsh-meta-v2-'))
+      const path = join(dir, 'meta.db')
+      const legacy = new DatabaseSync(path)
+      legacy.exec(
+        'CREATE TABLE meta_sessions(id TEXT PRIMARY KEY); CREATE TABLE evaluator_ledger(ts INTEGER NOT NULL); PRAGMA user_version = 2;',
+      )
+      legacy.close()
+      store = new MetaStore({ dbPath: path })
+      const db = store
+      db.recordPromotion('sig', 'slug')
+      expect(db.getSkill('sig')).toMatchObject({ slug: 'slug', confidence: 0.4, status: 'probation' })
+      db.close()
+      store = undefined
+      const raw = new DatabaseSync(path)
+      try {
+        const version = raw.prepare('PRAGMA user_version').get() as { user_version: number }
+        expect(version.user_version).toBe(META_SCHEMA_VERSION)
+      } finally {
+        raw.close()
+      }
+    } finally {
+      store?.close()
+      store = undefined
+      if (dir !== undefined) await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('stamps fresh databases at the current schema version', async () => {
+    let dir: string | undefined
+    try {
+      dir = await mkdtemp(join(tmpdir(), 'dsh-meta-v3-'))
+      const path = join(dir, 'meta.db')
+      store = new MetaStore({ dbPath: path })
+      store.close()
+      store = undefined
+      const raw = new DatabaseSync(path)
+      try {
+        const version = raw.prepare('PRAGMA user_version').get() as { user_version: number }
+        expect(version.user_version).toBe(META_SCHEMA_VERSION)
+      } finally {
+        raw.close()
+      }
+    } finally {
+      if (dir !== undefined) await rm(dir, { recursive: true, force: true })
+    }
+  })
+})

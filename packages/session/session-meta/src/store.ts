@@ -4,8 +4,9 @@
  * explicit `dbPath`, used by tests with `:memory:`).
  *
  * Schema v1 holds sessions + evidence. Schema v2 adds the evaluator budget
- * ledger; v1 databases migrate forward automatically (new tables only — no
- * row rewrites). Anything else throws instead of migrating (repo stance).
+ * ledger; schema v3 adds the skill registry. v1/v2 databases migrate forward
+ * automatically (new tables only — no row rewrites). Anything else throws
+ * instead of migrating (repo stance).
  *
  * @module @deepseek-ai/dsh-session-meta/store
  */
@@ -13,10 +14,16 @@
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import type { EvaluatorLedgerRow, MetaRoute, MetaSessionRow } from './types.ts'
+import type { EvaluatorLedgerRow, MetaRoute, MetaSessionRow, SkillRegistryRow, SkillStatus } from './types.ts'
 
-/** On-disk schema version; v1 migrates to v2, anything else throws. */
-export const META_SCHEMA_VERSION = 2
+/** On-disk schema version; v1/v2 migrate to v3, anything else throws. */
+export const META_SCHEMA_VERSION = 3
+
+/** Pipeline-promoted skills start here (probation — one regression archives). */
+export const SKILL_PROBATION_CONFIDENCE = 0.4
+
+/** Confidence floor: deltas clamp here and archive the candidate. */
+export const SKILL_CONFIDENCE_FLOOR = 0.3
 
 export interface MetaStoreOptions {
   /** Absolute database path, or `:memory:`. Parent directories are created. */
@@ -59,6 +66,14 @@ CREATE TABLE IF NOT EXISTS evaluator_ledger(
   decision TEXT NOT NULL,
   draft_slug TEXT
 );
+CREATE TABLE IF NOT EXISTS skill_registry(
+  trigger_signature TEXT PRIMARY KEY,
+  slug TEXT NOT NULL,
+  confidence REAL NOT NULL DEFAULT 0.40,
+  applied_count INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'probation',
+  updated_at INTEGER NOT NULL
+);
 `
 
 /** Narrow write model: one finished session plus its evidence rows. */
@@ -94,8 +109,9 @@ export class MetaStore {
     const version = this.db.prepare('PRAGMA user_version').get() as { user_version: number }
     if (version.user_version === 0) {
       this.db.exec(`PRAGMA user_version = ${META_SCHEMA_VERSION}`)
-    } else if (version.user_version === 1) {
-      // v1 → v2 is additive only (evaluator_ledger, created above): stamp forward.
+    } else if (version.user_version === 1 || version.user_version === 2) {
+      // v1/v2 → v3 are additive only (evaluator_ledger, skill_registry,
+      // created above): stamp forward.
       this.db.exec(`PRAGMA user_version = ${META_SCHEMA_VERSION}`)
     } else if (version.user_version !== META_SCHEMA_VERSION) {
       const seen = version.user_version
@@ -195,6 +211,82 @@ export class MetaStore {
   countEvaluationsSince(sinceTs: number): number {
     const row = this.db.prepare('SELECT COUNT(*) AS n FROM evaluator_ledger WHERE ts >= ?').get(sinceTs) as { n: number }
     return row.n
+  }
+
+  /**
+   * Look up one skill-registry candidate by trigger signature.
+   *
+   * @param signature - The candidate `trigger_signature` (the table key).
+   * @returns The registry row, or `undefined` when the signature is unknown.
+   */
+  getSkill(signature: string): SkillRegistryRow | undefined {
+    const row = this.db.prepare(
+      'SELECT trigger_signature, slug, confidence, applied_count, status, updated_at FROM skill_registry WHERE trigger_signature = ?',
+    ).get(signature) as Record<string, unknown> | undefined
+    if (row === undefined) return undefined
+    return {
+      triggerSignature: row['trigger_signature'] as string,
+      slug: row['slug'] as string,
+      confidence: row['confidence'] as number,
+      appliedCount: row['applied_count'] as number,
+      status: row['status'] as SkillStatus,
+      updatedAt: row['updated_at'] as number,
+    }
+  }
+
+  /**
+   * Promote a candidate skill: upsert at probation confidence. The signature
+   * is the key, so one live candidate per signature holds naturally — a
+   * different slug for the same signature replaces the previous row.
+   *
+   * @param signature - The candidate `trigger_signature`.
+   * @param slug - The promoted skill slug.
+   * @returns No return value; the row is inserted or fully reset.
+   */
+  recordPromotion(signature: string, slug: string): void {
+    this.db.prepare(`
+      INSERT INTO skill_registry(trigger_signature, slug, confidence, applied_count, status, updated_at)
+      VALUES(?, ?, ${SKILL_PROBATION_CONFIDENCE}, 0, 'probation', ?)
+      ON CONFLICT(trigger_signature) DO UPDATE SET
+        slug=excluded.slug, confidence=excluded.confidence, applied_count=0,
+        status=excluded.status, updated_at=excluded.updated_at`).run(signature, slug, Date.now())
+  }
+
+  /**
+   * Record one verified application of the skill behind a signature.
+   *
+   * @param signature - The candidate `trigger_signature`.
+   * @returns No return value; unknown signatures are ignored.
+   */
+  recordApplication(signature: string): void {
+    this.db.prepare(
+      'UPDATE skill_registry SET applied_count = applied_count + 1, updated_at = ? WHERE trigger_signature = ?',
+    ).run(Date.now(), signature)
+  }
+
+  /**
+   * Move a candidate's confidence by `delta`, clamped at `floor`. A move
+   * that would land below `floor` pins confidence at `floor` and archives
+   * the candidate (Plan-V1 §§3.4/4.2).
+   *
+   * @param signature - The candidate `trigger_signature`.
+   * @param delta - The confidence move (+0.10 explicit positive, −0.15 regression).
+   * @param floor - The eviction floor; defaults to `SKILL_CONFIDENCE_FLOOR`.
+   * @returns No return value; unknown signatures are ignored.
+   */
+  applyConfidenceDelta(signature: string, delta: number, floor: number = SKILL_CONFIDENCE_FLOOR): void {
+    const current = this.getSkill(signature)
+    if (current === undefined) return
+    const raw = current.confidence + delta
+    if (raw < floor) {
+      this.db.prepare(
+        "UPDATE skill_registry SET confidence = ?, status = 'archived', updated_at = ? WHERE trigger_signature = ?",
+      ).run(floor, Date.now(), signature)
+    } else {
+      this.db.prepare(
+        'UPDATE skill_registry SET confidence = ?, updated_at = ? WHERE trigger_signature = ?',
+      ).run(raw, Date.now(), signature)
+    }
   }
 
   close(): void {
