@@ -218,6 +218,47 @@ describe('skill-registry migration', () => {
   })
 })
 
+describe('promotion sessions', () => {
+  it('lists newest first by ts', () => {
+    const db = freshStore()
+    db.recordPromotionSession('sig', 's-old', 'task old', 100)
+    db.recordPromotionSession('sig', 's-new', 'task new', 300)
+    db.recordPromotionSession('sig', 's-mid', 'task mid', 200)
+    expect(db.listPromotionSessions('sig', 3, 'current')).toEqual([
+      { sessionId: 's-new', taskInput: 'task new' },
+      { sessionId: 's-mid', taskInput: 'task mid' },
+      { sessionId: 's-old', taskInput: 'task old' },
+    ])
+  })
+
+  it('excludes the given session', () => {
+    const db = freshStore()
+    db.recordPromotionSession('sig', 's1', 'task one', 100)
+    db.recordPromotionSession('sig', 's2', 'task two', 200)
+    expect(db.listPromotionSessions('sig', 3, 's2')).toEqual([{ sessionId: 's1', taskInput: 'task one' }])
+  })
+
+  it('caps rows at the limit and yields [] for non-positive limits', () => {
+    const db = freshStore()
+    db.recordPromotionSession('sig', 's1', 'task one', 100)
+    db.recordPromotionSession('sig', 's2', 'task two', 200)
+    db.recordPromotionSession('sig', 's3', 'task three', 300)
+    expect(db.listPromotionSessions('sig', 2, 'none')).toEqual([
+      { sessionId: 's3', taskInput: 'task three' },
+      { sessionId: 's2', taskInput: 'task two' },
+    ])
+    expect(db.listPromotionSessions('sig', 0, 'none')).toEqual([])
+    expect(db.listPromotionSessions('sig', -1, 'none')).toEqual([])
+  })
+
+  it('replaces the row on re-promote of the same session', () => {
+    const db = freshStore()
+    db.recordPromotionSession('sig', 's1', 'task one', 100)
+    db.recordPromotionSession('sig', 's1', 'task revised', 200)
+    expect(db.listPromotionSessions('sig', 3, 'none')).toEqual([{ sessionId: 's1', taskInput: 'task revised' }])
+  })
+})
+
 describe('replay runs', () => {
   it('counts nothing on a fresh store', () => {
     expect(freshStore().countReplayRunsSince(0)).toBe(0)

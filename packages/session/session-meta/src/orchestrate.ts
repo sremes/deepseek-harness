@@ -179,8 +179,9 @@ export async function evaluateTrackASession(
   // proceeds): budget exhaustion skips instead of blocking because no
   // re-drive queue exists yet — a blocked draft would die unpromoted
   // forever. Judge spend is not ledgered this slice: judgePair returns no
-  // token usage. L3 stays a later slice.
+  // token usage.
   const replayRunner = deps.replayRunner
+  let taskInputUsedForL2: string | undefined
   if (replayRunner === undefined) {
     deps.log(`session-meta: l2 skipped (no replay runner) for ${aggregate.sessionId}`)
   } else {
@@ -190,6 +191,7 @@ export async function evaluateTrackASession(
     } else if (deps.store.countReplayRunsSince(startOfUtcDay(now)) + 2 > config.maxReplaysPerDay) {
       deps.log(`session-meta: l2 skipped (replay budget) for ${aggregate.sessionId}`)
     } else {
+      taskInputUsedForL2 = taskInput
       let candidate: ReplayOutcome
       let baseline: ReplayOutcome
       try {
@@ -219,10 +221,63 @@ export async function evaluateTrackASession(
       }
     }
   }
+  // M3 L3: regression-sample gate (Plan-V1 §4.1) — same A/B shape as L2
+  // against up to 3 past same-trigger_signature sessions. Skips preserve
+  // promotion (no re-drive queue exists yet); every veto removes the draft
+  // dir, ledgers, and returns.
+  const pastSessions = deps.store.listPromotionSessions(result.proposal.triggerSignature, 3, aggregate.sessionId)
+  if (pastSessions.length === 0) {
+    deps.log(`session-meta: l3 skipped (no history) for ${aggregate.sessionId}`)
+  } else if (replayRunner === undefined) {
+    deps.log(`session-meta: l3 skipped (no replay runner) for ${aggregate.sessionId}`)
+  } else {
+    const remainingReplays = config.maxReplaysPerDay - deps.store.countReplayRunsSince(startOfUtcDay(now))
+    const affordablePairs = Math.floor(remainingReplays / 2)
+    const targets = pastSessions.slice(0, Math.max(0, Math.min(pastSessions.length, affordablePairs)))
+    if (targets.length === 0) {
+      deps.log(`session-meta: l3 skipped (replay budget) for ${aggregate.sessionId}`)
+    } else {
+      for (const [pairIndex, target] of targets.entries()) {
+        let pastCandidate: ReplayOutcome
+        let pastBaseline: ReplayOutcome
+        try {
+          pastCandidate = await replayRunner.run(target.taskInput, { skillOverlay: draft.dir })
+          pastBaseline = await replayRunner.run(target.taskInput)
+          deps.store.recordReplayRun(now)
+          deps.store.recordReplayRun(now)
+        } catch (error) {
+          rmSync(draft.dir, { recursive: true, force: true })
+          deps.store.recordEvaluation({ ts: now, sessionId: aggregate.sessionId, inputTokens: result.inputTokens, outputTokens: result.outputTokens, decision: 'l3-error', draftSlug: null })
+          deps.log(`session-meta: l3 replay failed for ${aggregate.sessionId} (pair ${pairIndex}): ${String(error)}`)
+          return { decision: 'l3-error', draftSlug: null }
+        }
+        const pastHarm = compareForHarm(pastCandidate, pastBaseline)
+        if (!pastHarm.notWorse) {
+          rmSync(draft.dir, { recursive: true, force: true })
+          deps.store.recordEvaluation({ ts: now, sessionId: aggregate.sessionId, inputTokens: result.inputTokens, outputTokens: result.outputTokens, decision: 'l3-rejected', draftSlug: null })
+          deps.log(`session-meta: draft failed L3 replay for ${aggregate.sessionId} (pair ${pairIndex}): ${pastHarm.reasons.join('; ')}`)
+          return { decision: 'l3-rejected', draftSlug: null }
+        }
+        const pastVerdict = await judgePair(llm, config, buildReplaySummary(pastCandidate), buildReplaySummary(pastBaseline))
+        if (!pastVerdict.pass) {
+          rmSync(draft.dir, { recursive: true, force: true })
+          deps.store.recordEvaluation({ ts: now, sessionId: aggregate.sessionId, inputTokens: result.inputTokens, outputTokens: result.outputTokens, decision: 'l3-rejected', draftSlug: null })
+          deps.log(`session-meta: draft failed L3 judge for ${aggregate.sessionId} (pair ${pairIndex}): ${pastVerdict.grounds.join('; ')}`)
+          return { decision: 'l3-rejected', draftSlug: null }
+        }
+      }
+    }
+  }
   // M3 promotion wiring (Plan-V1 §§3.4/4.1): an L0+L1-passing draft enters
   // the registry on probation at 0.40. The probation→live transition stays
   // unwired until L2–L4 verdicts exist to justify it.
   deps.store.recordPromotion(result.proposal.triggerSignature, draft.slug)
+  deps.store.recordPromotionSession(
+    result.proposal.triggerSignature,
+    aggregate.sessionId,
+    taskInputUsedForL2 ?? aggregate.openingTask ?? projection.goal,
+    now,
+  )
   deps.store.recordEvaluation({
     ts: now,
     sessionId: aggregate.sessionId,

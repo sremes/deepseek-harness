@@ -5,9 +5,9 @@
  *
  * Schema v1 holds sessions + evidence. Schema v2 adds the evaluator budget
  * ledger; schema v3 adds the skill registry; schema v4 adds the replay-run
- * budget ledger. v1/v2/v3 databases migrate forward automatically (new
- * tables only — no row rewrites). Anything else throws instead of migrating
- * (repo stance).
+ * budget ledger; schema v5 adds the skill-sessions history. v1/v2/v3/v4
+ * databases migrate forward automatically (new tables only — no row
+ * rewrites). Anything else throws instead of migrating (repo stance).
  *
  * @module @deepseek-ai/dsh-session-meta/store
  */
@@ -17,8 +17,8 @@ import { dirname } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import type { EvaluatorLedgerRow, MetaRoute, MetaSessionRow, SkillRegistryRow, SkillStatus } from './types.ts'
 
-/** On-disk schema version; v1/v2/v3 migrate to v4, anything else throws. */
-export const META_SCHEMA_VERSION = 4
+/** On-disk schema version; v1/v2/v3/v4 migrate to v5, anything else throws. */
+export const META_SCHEMA_VERSION = 5
 
 /** Pipeline-promoted skills start here (probation — one regression archives). */
 export const SKILL_PROBATION_CONFIDENCE = 0.4
@@ -78,6 +78,13 @@ CREATE TABLE IF NOT EXISTS skill_registry(
 CREATE TABLE IF NOT EXISTS replay_runs(
   ts INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS skill_sessions(
+  trigger_signature TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  task_input TEXT NOT NULL,
+  ts INTEGER NOT NULL,
+  PRIMARY KEY(trigger_signature, session_id)
+);
 `
 
 /** Narrow write model: one finished session plus its evidence rows. */
@@ -113,9 +120,9 @@ export class MetaStore {
     const version = this.db.prepare('PRAGMA user_version').get() as { user_version: number }
     if (version.user_version === 0) {
       this.db.exec(`PRAGMA user_version = ${META_SCHEMA_VERSION}`)
-    } else if (version.user_version === 1 || version.user_version === 2 || version.user_version === 3) {
-      // v1/v2/v3 → v4 are additive only (evaluator_ledger, skill_registry,
-      // replay_runs, created above): stamp forward.
+    } else if (version.user_version === 1 || version.user_version === 2 || version.user_version === 3 || version.user_version === 4) {
+      // v1/v2/v3/v4 → v5 are additive only (evaluator_ledger, skill_registry,
+      // replay_runs, skill_sessions, created above): stamp forward.
       this.db.exec(`PRAGMA user_version = ${META_SCHEMA_VERSION}`)
     } else if (version.user_version !== META_SCHEMA_VERSION) {
       const seen = version.user_version
@@ -325,6 +332,41 @@ export class MetaStore {
         'UPDATE skill_registry SET confidence = ?, updated_at = ? WHERE trigger_signature = ?',
       ).run(raw, Date.now(), signature)
     }
+  }
+
+  /**
+   * Record one promoted session's replayable task input behind a signature.
+   *
+   * @param signature - The promoted `trigger_signature` (the table key).
+   * @param sessionId - The promoted session id (one row per signature).
+   * @param taskInput - The replayable task input the L2 pair ran.
+   * @param ts - Promotion timestamp (UTC millis, newest-first order key).
+   * @returns No return value; re-promotion of the same session replaces its row.
+   */
+  recordPromotionSession(signature: string, sessionId: string, taskInput: string, ts: number): void {
+    this.db.prepare(
+      'INSERT OR REPLACE INTO skill_sessions(trigger_signature, session_id, task_input, ts) VALUES(?, ?, ?, ?)',
+    ).run(signature, sessionId, taskInput, ts)
+  }
+
+  /**
+   * List past promoted sessions for one signature, newest first.
+   *
+   * @param signature - The `trigger_signature` to look up.
+   * @param limit - Maximum rows to return; values <= 0 yield [].
+   * @param excludeSessionId - Session id to exclude (the current session).
+   * @returns Up to `limit` past sessions, newest first by ts.
+   */
+  listPromotionSessions(
+    signature: string,
+    limit: number,
+    excludeSessionId: string,
+  ): ReadonlyArray<{ sessionId: string; taskInput: string }> {
+    if (limit <= 0) return []
+    const rows = this.db.prepare(
+      'SELECT session_id, task_input FROM skill_sessions WHERE trigger_signature = ? AND session_id != ? ORDER BY ts DESC LIMIT ?',
+    ).all(signature, excludeSessionId, limit) as Array<{ session_id: string; task_input: string }>
+    return rows.map(row => ({ sessionId: row.session_id, taskInput: row.task_input }))
   }
 
   close(): void {

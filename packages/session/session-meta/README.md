@@ -129,7 +129,7 @@ versioned (`PRAGMA user_version = 3`); mismatches throw instead of migrating.
 - `src/evaluator.ts` — budget-capped Flash call over Σ; schema-validated proposals.
 - `src/judge.ts` — M3 L4-lite blinded order-swapped pairwise judge; harm veto only, fails closed.
 - `src/replay.ts` — M3 L2/L3 replay-driver seam: outcome data, runner interface, scripted fake, harm veto, judge summary.
-- `src/orchestrate.ts` — offline loop driver (budget, steering files, L0/L1 gates, L2 motivating-task replay gate, gated drafts).
+- `src/orchestrate.ts` — offline loop driver (budget, steering files, L0/L1 gates, L2 motivating-task replay gate, L3 regression-sample gate, gated drafts).
 - `src/steering.ts` — headless correction-record ingest.
 - `src/writer.ts` — gated `SKILL.md` drafts (`disable-model-invocation`, `whenToUse`).
 - `src/l0.ts` — M3 L0 contract gate: deterministic veto over a rendered draft (frontmatter, metadata, sections, mechanizable bans); the orchestrator ledgers `l0-rejected` without writing.
