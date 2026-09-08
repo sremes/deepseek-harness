@@ -254,7 +254,7 @@ describe('runReproduction', () => {
     try {
       const logs: string[] = []
       const file = join('nowhere', 'repro.spec.ts')
-      await runReproduction({ file, vitestBin: join('nowhere', 'vitest'), timeoutMs: 1000, store, now: NOW, log: (message) => logs.push(message) })
+      await runReproduction({ file, vitestBin: join('nowhere', 'vitest'), timeoutMs: 1000, store, now: NOW, log: message => logs.push(message) })
       expect(store.listTrackBRuns(file)).toEqual([{ ts: NOW, file, exitCode: -1 }])
       expect(logs).toHaveLength(1)
       expect(logs[0]).toContain(file)
@@ -268,8 +268,8 @@ describe('runReproduction', () => {
     const store = new MetaStore({ dbPath: ':memory:' })
     try {
       const logs: string[] = []
-      const file = 'bad\0file.spec.ts'
-      await runReproduction({ file, vitestBin: 'vitest', timeoutMs: 1000, store, now: NOW, log: (message) => logs.push(message) })
+      const file = join(tmpdir(), 'bad\0file.spec.ts')
+      await runReproduction({ file, vitestBin: 'vitest', timeoutMs: 1000, store, now: NOW, log: message => logs.push(message) })
       expect(store.listTrackBRuns(file)).toEqual([{ ts: NOW, file, exitCode: -1 }])
       expect(logs).toHaveLength(1)
     } finally {
@@ -281,7 +281,8 @@ describe('runReproduction', () => {
     const store = new MetaStore({ dbPath: ':memory:' })
     store.close()
     const logs: string[] = []
-    await runReproduction({ file: 'repro.spec.ts', vitestBin: join('nowhere', 'vitest'), timeoutMs: 1000, store, now: NOW, log: (message) => logs.push(message) })
+    const file = join(await freshDir(), 'repro.spec.ts')
+    await runReproduction({ file, vitestBin: join('nowhere', 'vitest'), timeoutMs: 1000, store, now: NOW, log: message => logs.push(message) })
     expect(logs).toHaveLength(1)
     expect(logs[0]).toContain('exited -1')
   })
@@ -292,7 +293,16 @@ describe('startReproRun', () => {
     const store = new MetaStore({ dbPath: ':memory:' })
     try {
       const logs: string[] = []
-      await expect(startReproRun({ emitted: undefined, startDir: tmpdir(), timeoutMs: 1000, store, now: NOW, log: (message) => logs.push(message) })).resolves.toBeUndefined()
+      await expect(
+        startReproRun({
+          emitted: undefined,
+          startDir: tmpdir(),
+          timeoutMs: 1000,
+          store,
+          now: NOW,
+          log: message => logs.push(message),
+        }),
+      ).resolves.toBeUndefined()
       expect(logs).toEqual([])
       expect(store.listTrackBRuns('anything')).toEqual([])
     } finally {
@@ -311,7 +321,7 @@ describe('startReproRun', () => {
         timeoutMs: 1000,
         store,
         now: NOW,
-        log: (message) => logs.push(message),
+        log: message => logs.push(message),
       })
       expect(logs).toEqual(['session-meta: track_b runner skipped (no vitest binary)'])
       expect(store.listTrackBRuns(join(reproDir, 'repro.spec.ts'))).toEqual([])
@@ -337,7 +347,7 @@ describe('startReproRun', () => {
         timeoutMs: 10_000,
         store,
         now: NOW,
-        log: (message) => logs.push(message),
+        log: message => logs.push(message),
       })
       expect(store.listTrackBRuns(file)).toEqual([{ ts: NOW, file, exitCode: -1 }])
       expect(logs).toHaveLength(1)
@@ -383,7 +393,7 @@ describe('M4 Track B spec runner acceptance (real vitest)', () => {
       const emitted = emitReproduction(payloadAggregate('accept-green', '{"a":}'), dir, NOW)
       if (emitted === undefined) throw new Error('emission missing for the green aggregate')
       const logs: string[] = []
-      await runReproduction({ file: emitted.file, vitestBin, timeoutMs: 120_000, store, now: NOW, log: (message) => logs.push(message) })
+      await runReproduction({ file: emitted.file, vitestBin, timeoutMs: 120_000, store, now: NOW, log: message => logs.push(message) })
       expect(store.listTrackBRuns(emitted.file)).toEqual([{ ts: NOW, file: emitted.file, exitCode: 0 }])
       expect(logs).toHaveLength(1)
       expect(logs[0]).toContain('exited 0')
@@ -400,7 +410,7 @@ describe('M4 Track B spec runner acceptance (real vitest)', () => {
       const emitted = emitReproduction(payloadAggregate('accept-red', '{"a":1}'), dir, NOW)
       if (emitted === undefined) throw new Error('emission missing for the red aggregate')
       const logs: string[] = []
-      await runReproduction({ file: emitted.file, vitestBin, timeoutMs: 120_000, store, now: NOW, log: (message) => logs.push(message) })
+      await runReproduction({ file: emitted.file, vitestBin, timeoutMs: 120_000, store, now: NOW, log: message => logs.push(message) })
       const rows = store.listTrackBRuns(emitted.file)
       expect(rows).toHaveLength(1)
       expect(rows[0]?.exitCode).not.toBe(0)
@@ -418,7 +428,7 @@ describe('M4 Track B spec runner acceptance (real vitest)', () => {
       const emitted = emitReproduction(payloadAggregate('accept-timeout', '{"a":}'), dir, NOW)
       if (emitted === undefined) throw new Error('emission missing for the timeout aggregate')
       const logs: string[] = []
-      await runReproduction({ file: emitted.file, vitestBin, timeoutMs: 500, store, now: NOW, log: (message) => logs.push(message) })
+      await runReproduction({ file: emitted.file, vitestBin, timeoutMs: 500, store, now: NOW, log: message => logs.push(message) })
       expect(store.listTrackBRuns(emitted.file)).toEqual([{ ts: NOW, file: emitted.file, exitCode: -1 }])
       expect(logs).toHaveLength(1)
     } finally {

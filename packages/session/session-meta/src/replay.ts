@@ -7,33 +7,7 @@
  * @module @deepseek-ai/dsh-session-meta/replay
  */
 
-/**
- * Plain replay outcome data. An SDK adapter later maps `RunResult` events
- * onto this shape; the pipeline only reads these fields.
- */
-export interface ReplayOutcome {
-  readonly completed: boolean
-  readonly turnEnd: string | null
-  readonly steeringCount: number
-  readonly toolCalls: number
-  readonly summary: string
-}
-
-/**
- * Structural replay-runner seam. `DeepSeekHarness.run` already has this
- * shape (it returns richer data, structurally assignable where it matters);
- * the SDK-backed runner built later implements this interface.
- */
-export interface ReplayRunner {
-  /**
-   * Run one replay of the given task input.
-   *
-   * @param input - task input to replay.
-   * @param options - optional run options carrying the session id and the candidate skill overlay.
-   * @returns the replay outcome.
-   */
-  run(input: string, options?: { sessionId?: string; skillOverlay?: string }): Promise<ReplayOutcome>
-}
+import type { ReplayOutcome, ReplayRunner } from './types.ts'
 
 /**
  * Scripted fake runner serving queued outcomes in order for unit tests.

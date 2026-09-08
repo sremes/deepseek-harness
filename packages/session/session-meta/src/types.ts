@@ -202,3 +202,33 @@ export interface TrackBRunRow {
   /** Process exit code; -1 on signal death, timeout SIGKILL, or spawn error. */
   readonly exitCode: number
 }
+
+/**
+ * Plain replay outcome data (M3 L2/L3 seam, Plan-V1 §4.1 + Q15). An SDK
+ * adapter later maps `RunResult` events onto this shape; the pipeline only
+ * reads these fields.
+ */
+export interface ReplayOutcome {
+  readonly completed: boolean
+  readonly turnEnd: string | null
+  readonly steeringCount: number
+  readonly toolCalls: number
+  readonly summary: string
+}
+
+/**
+ * Structural replay-runner seam (M3 L2/L3, Plan-V1 §4.1 + Q15).
+ * `DeepSeekHarness.run` already has this shape (it returns richer data,
+ * structurally assignable where it matters); the SDK-backed runner built
+ * later implements this interface.
+ */
+export interface ReplayRunner {
+  /**
+   * Run one replay of the given task input.
+   *
+   * @param input - task input to replay.
+   * @param options - optional run options carrying the session id and the candidate skill overlay.
+   * @returns the replay outcome.
+   */
+  run(input: string, options?: { sessionId?: string; skillOverlay?: string }): Promise<ReplayOutcome>
+}

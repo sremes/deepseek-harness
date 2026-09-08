@@ -1,36 +1,18 @@
 /**
  * Structural replay seam for the SDK-backed L2/L3 driver (Plan-V1 §4.1 +
- * Q15). These interfaces mirror `@deepseek-ai/dsh-session-meta`'s
- * `replay.ts` (`ReplayOutcome`/`ReplayRunner`) field-for-field, but are
- * declared locally: that module is not exported from the package root, and
- * this package must never import `sdk-client`, `dsh-session`, or `dsh-llm`
- * at runtime — only `SessionEvent` as a type. The wiring slice publishes
- * the canonical seam or re-exports these; until then this file is the
- * adapter's home for the shape, and any drift from `replay.ts` is a defect
- * in this file.
+ * Q15). `ReplayOutcome`/`ReplayRunner` are owned by
+ * `@deepseek-ai/dsh-session-meta`'s `replay.ts` and re-exported here as
+ * type-only aliases, so this file declares no shape of its own for them.
+ * This package still never imports `sdk-client`, `dsh-session`, or `dsh-llm`
+ * at runtime — only `SessionEvent` as a type.
  *
  * @module @deepseek-ai/dsh-session-meta-replay/types
  */
 
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 
-/**
- * Plain replay outcome data, mirroring `ReplayOutcome` in
- * `@deepseek-ai/dsh-session-meta`'s `replay.ts`. The evaluation pipeline
- * only reads these fields.
- */
-export interface ReplayOutcome {
-  /** Whether the replay's last turn ended completed. */
-  readonly completed: boolean
-  /** The last turn-end reason kind, or null when no turn ended. */
-  readonly turnEnd: string | null
-  /** Human steering interventions observed after the first assistant message. */
-  readonly steeringCount: number
-  /** Model-issued tool calls observed during the replay. */
-  readonly toolCalls: number
-  /** The replay's final response text, truncated to its bound. */
-  readonly summary: string
-}
+/** Canonical replay outcome data, owned by session-meta's `types.ts` (re-exported from the package root). */
+export type { ReplayOutcome, ReplayRunner } from '@deepseek-ai/dsh-session-meta'
 
 /**
  * Per-arm run options, mirroring the `ReplayRunner.run` options in
@@ -70,22 +52,6 @@ export interface ReplayRunFn {
    * @returns the run's events plus its final response text.
    */
   run(input: string, options?: ReplayRunOptions): Promise<ReplayRunResult>
-}
-
-/**
- * Structural replay-runner seam, mirroring `ReplayRunner` in
- * `@deepseek-ai/dsh-session-meta`'s `replay.ts`. `EvaluationDeps.replayRunner`
- * accepts any implementation of this shape.
- */
-export interface ReplayRunner {
-  /**
-   * Run one replay of the given task input.
-   *
-   * @param input - task input to replay.
-   * @param options - optional run options carrying the session id and the candidate skill overlay.
-   * @returns the replay outcome.
-   */
-  run(input: string, options?: ReplayRunOptions): Promise<ReplayOutcome>
 }
 
 /**
