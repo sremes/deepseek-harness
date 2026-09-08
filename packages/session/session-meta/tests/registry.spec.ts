@@ -2,8 +2,8 @@
  * Skill-registry store slice: promotion lifecycle persistence (Plan-V1 M3,
  * §§3.4/4.1/4.2). Covers every branch of `recordPromotion`,
  * `recordLive`, `recordApplication`, `applyConfidenceDelta`, and `getSkill`, the
- * replay-run budget ledger, the promotions ledger, plus the v2 → v3, v3 → v4,
- * and v5 → v6 migrations.
+ * replay-run budget ledger, the promotions ledger, the Track B spec-runner
+ * ledger, plus the v2 → v3, v3 → v4, v5 → v6, and v6 → v7 migrations.
  */
 
 import { mkdtemp, rm } from 'node:fs/promises'
@@ -338,6 +338,80 @@ describe('replay runs', () => {
       const db = store
       db.recordReplayRun(Date.UTC(2026, 8, 4, 12, 0, 0))
       expect(db.countReplayRunsSince(0)).toBe(1)
+      db.close()
+      store = undefined
+      const raw = new DatabaseSync(path)
+      try {
+        const version = raw.prepare('PRAGMA user_version').get() as { user_version: number }
+        expect(version.user_version).toBe(META_SCHEMA_VERSION)
+      } finally {
+        raw.close()
+      }
+    } finally {
+      store?.close()
+      store = undefined
+      if (dir !== undefined) await rm(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('trackb runs', () => {
+  it('inserts and lists one file newest first', () => {
+    const db = freshStore()
+    expect(db.listTrackBRuns('repro.spec.ts')).toEqual([])
+    db.recordTrackBRun(100, 'repro.spec.ts', 0)
+    db.recordTrackBRun(300, 'repro.spec.ts', 1)
+    db.recordTrackBRun(200, 'repro.spec.ts', 0)
+    db.recordTrackBRun(400, 'other.spec.ts', 0)
+    expect(db.listTrackBRuns('repro.spec.ts')).toEqual([
+      { ts: 300, file: 'repro.spec.ts', exitCode: 1 },
+      { ts: 200, file: 'repro.spec.ts', exitCode: 0 },
+      { ts: 100, file: 'repro.spec.ts', exitCode: 0 },
+    ])
+    expect(db.listTrackBRuns('other.spec.ts')).toEqual([{ ts: 400, file: 'other.spec.ts', exitCode: 0 }])
+  })
+
+  it('caps rows at the limit, defaults to 10, and yields [] for non-positive limits', () => {
+    const db = freshStore()
+    for (let ts = 1; ts <= 12; ts += 1) {
+      db.recordTrackBRun(ts, 'repro.spec.ts', 0)
+    }
+    expect(db.listTrackBRuns('repro.spec.ts')).toHaveLength(10)
+    expect(db.listTrackBRuns('repro.spec.ts').map(row => row.ts)).toEqual([12, 11, 10, 9, 8, 7, 6, 5, 4, 3])
+    expect(db.listTrackBRuns('repro.spec.ts', 2).map(row => row.ts)).toEqual([12, 11])
+    expect(db.listTrackBRuns('repro.spec.ts', 0)).toEqual([])
+    expect(db.listTrackBRuns('repro.spec.ts', -1)).toEqual([])
+  })
+
+  it('migrates a v6 database forward and stamps v7', async () => {
+    let dir: string | undefined
+    try {
+      dir = await mkdtemp(join(tmpdir(), 'dsh-meta-v6-'))
+      const path = join(dir, 'meta.db')
+      const legacy = new DatabaseSync(path)
+      // Realistic skeletal v6 database: every table carries its FULL real
+      // columns (a skeletal table the test later touches would fail or lie).
+      legacy.exec(
+        'CREATE TABLE meta_sessions(id TEXT PRIMARY KEY, cwd TEXT, parent_session TEXT, origin TEXT, started_at INTEGER NOT NULL, ended_at INTEGER NOT NULL, events INTEGER NOT NULL, tool_calls INTEGER NOT NULL, tool_errors TEXT NOT NULL, agent_errors TEXT NOT NULL, steering_events INTEGER NOT NULL, feedback_events INTEGER NOT NULL, assistant_messages INTEGER NOT NULL, turn_end_reason TEXT, route TEXT NOT NULL, reasons TEXT NOT NULL, dropped_evidence INTEGER NOT NULL DEFAULT 0);'
+        + 'CREATE TABLE meta_evidence(session_id TEXT NOT NULL, seq INTEGER NOT NULL, type TEXT NOT NULL, severity TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY(session_id, seq));'
+        + 'CREATE TABLE evaluator_ledger(ts INTEGER NOT NULL, session_id TEXT NOT NULL, input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL, decision TEXT NOT NULL, draft_slug TEXT);'
+        + 'CREATE TABLE skill_registry(trigger_signature TEXT PRIMARY KEY, slug TEXT NOT NULL, confidence REAL NOT NULL DEFAULT 0.40, applied_count INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT \'probation\', updated_at INTEGER NOT NULL);'
+        + 'CREATE TABLE replay_runs(ts INTEGER NOT NULL);'
+        + 'CREATE TABLE skill_sessions(trigger_signature TEXT NOT NULL, session_id TEXT NOT NULL, task_input TEXT NOT NULL, ts INTEGER NOT NULL, PRIMARY KEY(trigger_signature, session_id));'
+        + 'CREATE TABLE promotions(ts INTEGER NOT NULL, trigger_signature TEXT NOT NULL);'
+        + 'PRAGMA user_version = 6;',
+      )
+      legacy.close()
+      store = new MetaStore({ dbPath: path })
+      const db = store
+      db.recordTrackBRun(100, 'repro.spec.ts', 0)
+      db.recordTrackBRun(200, 'repro.spec.ts', -1)
+      expect(db.listTrackBRuns('repro.spec.ts')).toEqual([
+        { ts: 200, file: 'repro.spec.ts', exitCode: -1 },
+        { ts: 100, file: 'repro.spec.ts', exitCode: 0 },
+      ])
+      db.recordPromotion('sig', 'slug')
+      expect(db.getSkill('sig')).toMatchObject({ slug: 'slug', status: 'probation' })
       db.close()
       store = undefined
       const raw = new DatabaseSync(path)

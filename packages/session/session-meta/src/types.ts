@@ -192,3 +192,13 @@ export interface SkillRegistryRow {
   readonly status: SkillStatus
   readonly updatedAt: number
 }
+
+/** Persisted `trackb_runs` row: one M4 spec-runner outcome per emitted spec. */
+export interface TrackBRunRow {
+  /** Run timestamp (UTC millis, newest-first order key). */
+  readonly ts: number
+  /** Emitted spec file the run executed. */
+  readonly file: string
+  /** Process exit code; -1 on signal death, timeout SIGKILL, or spawn error. */
+  readonly exitCode: number
+}

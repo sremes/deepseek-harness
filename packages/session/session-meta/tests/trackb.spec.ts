@@ -1,21 +1,22 @@
 /**
- * Unit proof for the M4 Track B reproduction emitter: parser-class crashes
- * emit deterministic specs, everything else lands in the breakages
- * register, and clean sessions leave no trace.
- *
- * Boundary note: `finalizeSession` in `src/index.ts` is module-private, so
- * the finalize wiring (track_b → `recordTrackB` inside the curator try/catch)
- * has no direct flow test here and no Loader test by slice scope; the
- * emission/register decision itself is pinned through `recordTrackB` below.
+ * Unit proof for the M4 Track B reproduction emitter plus the M4 spec
+ * runner: parser-class crashes emit deterministic specs, everything else
+ * lands in the breakages register, and clean sessions leave no trace. The
+ * runner slice executes emitted specs under the real Vitest binary and
+ * ledgers the outcome; finalize wiring (track_b → `recordTrackB` →
+ * `startReproRun` on the shared settle set) fires through the composition
+ * suite, which now really spawns a repro run.
  */
 
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { SessionAggregate } from '../src/types.ts'
-import { PARSER_CLASS_RE, appendBreakage, emitReproduction, recordTrackB } from '../src/trackb.ts'
+import { PARSER_CLASS_RE, TRACKB_RUN_TIMEOUT_MS, appendBreakage, emitReproduction, recordTrackB, resolveVitestBin, runReproduction, startReproRun } from '../src/trackb.ts'
+import { MetaStore } from '../src/store.ts'
 import { makeAggregate } from './helpers.ts'
 
 const NOW = 1788297600000
@@ -172,9 +173,10 @@ describe('recordTrackB', () => {
   it('emits the spec and logs the file for parser-class crashes', async () => {
     const reproDir = await freshDir()
     const logs: string[] = []
-    recordTrackB(crashAggregate('s9'), reproDir, NOW, (message) => {
+    const emitted = recordTrackB(crashAggregate('s9'), reproDir, NOW, (message) => {
       logs.push(message)
     })
+    expect(emitted?.file).toBe(join(reproDir, 'repro-s9-write-file.spec.ts'))
     expect(logs).toHaveLength(1)
     expect(logs[0]).toContain('repro-s9-write-file.spec.ts')
     expect(existsSync(join(reproDir, 'breakages.jsonl'))).toBe(false)
@@ -185,11 +187,242 @@ describe('recordTrackB', () => {
     const aggregate = makeAggregate('s10')
     aggregate.toolSteps.push({ tool: 'search', ok: false, error: 'ERR_REGEX_TIMEOUT', args: '(a+)+$' })
     const logs: string[] = []
-    recordTrackB(aggregate, reproDir, NOW, (message) => {
+    const emitted = recordTrackB(aggregate, reproDir, NOW, (message) => {
       logs.push(message)
     })
+    expect(emitted).toBeUndefined()
     expect(logs).toHaveLength(1)
     expect(logs[0]).toContain('s10')
     expect(JSON.parse(readFileSync(join(reproDir, 'breakages.jsonl'), 'utf8'))).toMatchObject({ sessionId: 's10', tool: 'search' })
   })
+})
+
+describe('TRACKB_RUN_TIMEOUT_MS', () => {
+  it('pins the 60s protocol kill bound', () => {
+    expect(TRACKB_RUN_TIMEOUT_MS).toBe(60_000)
+  })
+})
+
+describe('resolveVitestBin', () => {
+  it('finds node_modules/.bin/vitest in an ancestor, preferring the nearest', async () => {
+    const reproDir = await freshDir()
+    const base: string = dirname(dirname(reproDir))
+    const outerBinDir = join(base, 'node_modules', '.bin')
+    mkdirSync(outerBinDir, { recursive: true })
+    const outerBin = join(outerBinDir, 'vitest')
+    writeFileSync(outerBin, 'outer')
+    const startDir = join(base, 'nested')
+    expect(resolveVitestBin(startDir)).toBe(outerBin)
+    const innerBinDir = join(startDir, 'node_modules', '.bin')
+    mkdirSync(innerBinDir, { recursive: true })
+    const innerBin = join(innerBinDir, 'vitest')
+    writeFileSync(innerBin, 'inner')
+    expect(resolveVitestBin(startDir)).toBe(innerBin)
+  })
+
+  it('returns undefined when no level holds the binary', async () => {
+    const reproDir = await freshDir()
+    expect(resolveVitestBin(join(dirname(dirname(reproDir)), 'nested'))).toBeUndefined()
+  })
+
+  it('ignores a node_modules/.bin/vitest that is a directory, not a file', async () => {
+    const reproDir = await freshDir()
+    const base: string = dirname(dirname(reproDir))
+    mkdirSync(join(base, 'node_modules', '.bin', 'vitest'), { recursive: true })
+    expect(resolveVitestBin(join(base, 'nested'))).toBeUndefined()
+  })
+
+  it('climbs at most 6 levels', async () => {
+    root = await mkdtemp(join(tmpdir(), 'dsh-trackb-bin-'))
+    const base: string = root
+    const binDir = join(base, 'node_modules', '.bin')
+    mkdirSync(binDir, { recursive: true })
+    const bin = join(binDir, 'vitest')
+    writeFileSync(bin, 'fake')
+    const deep6 = join(base, 'd1', 'd2', 'd3', 'd4', 'd5', 'd6')
+    mkdirSync(deep6, { recursive: true })
+    // startDir plus 5 ancestors never reach the binary at the 7th level.
+    expect(resolveVitestBin(deep6)).toBeUndefined()
+    // One level up, the binary sits exactly at the 6th level.
+    expect(resolveVitestBin(join(base, 'd1', 'd2', 'd3', 'd4', 'd5'))).toBe(bin)
+  })
+})
+
+describe('runReproduction', () => {
+  it('ledgers -1 plus one log line when the binary cannot spawn', async () => {
+    const store = new MetaStore({ dbPath: ':memory:' })
+    try {
+      const logs: string[] = []
+      const file = join('nowhere', 'repro.spec.ts')
+      await runReproduction({ file, vitestBin: join('nowhere', 'vitest'), timeoutMs: 1000, store, now: NOW, log: (message) => logs.push(message) })
+      expect(store.listTrackBRuns(file)).toEqual([{ ts: NOW, file, exitCode: -1 }])
+      expect(logs).toHaveLength(1)
+      expect(logs[0]).toContain(file)
+      expect(logs[0]).toContain('exited -1')
+    } finally {
+      store.close()
+    }
+  })
+
+  it('ledgers -1 when spawn throws synchronously (NUL in argv)', async () => {
+    const store = new MetaStore({ dbPath: ':memory:' })
+    try {
+      const logs: string[] = []
+      const file = 'bad\0file.spec.ts'
+      await runReproduction({ file, vitestBin: 'vitest', timeoutMs: 1000, store, now: NOW, log: (message) => logs.push(message) })
+      expect(store.listTrackBRuns(file)).toEqual([{ ts: NOW, file, exitCode: -1 }])
+      expect(logs).toHaveLength(1)
+    } finally {
+      store.close()
+    }
+  })
+
+  it('still logs when the ledger insert fails on a closed store', async () => {
+    const store = new MetaStore({ dbPath: ':memory:' })
+    store.close()
+    const logs: string[] = []
+    await runReproduction({ file: 'repro.spec.ts', vitestBin: join('nowhere', 'vitest'), timeoutMs: 1000, store, now: NOW, log: (message) => logs.push(message) })
+    expect(logs).toHaveLength(1)
+    expect(logs[0]).toContain('exited -1')
+  })
+})
+
+describe('startReproRun', () => {
+  it('resolves without logging or ledgering on the breakage path (no emitted spec)', async () => {
+    const store = new MetaStore({ dbPath: ':memory:' })
+    try {
+      const logs: string[] = []
+      await expect(startReproRun({ emitted: undefined, startDir: tmpdir(), timeoutMs: 1000, store, now: NOW, log: (message) => logs.push(message) })).resolves.toBeUndefined()
+      expect(logs).toEqual([])
+      expect(store.listTrackBRuns('anything')).toEqual([])
+    } finally {
+      store.close()
+    }
+  })
+
+  it('logs the skip and ledgers nothing when no binary resolves', async () => {
+    const reproDir = await freshDir()
+    const store = new MetaStore({ dbPath: ':memory:' })
+    try {
+      const logs: string[] = []
+      await startReproRun({
+        emitted: { file: join(reproDir, 'repro.spec.ts'), testName: 'repro' },
+        startDir: join(dirname(dirname(reproDir)), 'nested'),
+        timeoutMs: 1000,
+        store,
+        now: NOW,
+        log: (message) => logs.push(message),
+      })
+      expect(logs).toEqual(['session-meta: track_b runner skipped (no vitest binary)'])
+      expect(store.listTrackBRuns(join(reproDir, 'repro.spec.ts'))).toEqual([])
+    } finally {
+      store.close()
+    }
+  })
+
+  it('runs the spec and ledgers the outcome when a binary resolves', async () => {
+    const reproDir = await freshDir()
+    const base: string = dirname(dirname(reproDir))
+    const binDir = join(base, 'node_modules', '.bin')
+    mkdirSync(binDir, { recursive: true })
+    // Present but not executable: the spawn fails fast and ledgers -1.
+    writeFileSync(join(binDir, 'vitest'), 'not executable')
+    const store = new MetaStore({ dbPath: ':memory:' })
+    try {
+      const logs: string[] = []
+      const file = join(reproDir, 'repro.spec.ts')
+      await startReproRun({
+        emitted: { file, testName: 'repro' },
+        startDir: join(base, 'nested'),
+        timeoutMs: 10_000,
+        store,
+        now: NOW,
+        log: (message) => logs.push(message),
+      })
+      expect(store.listTrackBRuns(file)).toEqual([{ ts: NOW, file, exitCode: -1 }])
+      expect(logs).toHaveLength(1)
+      expect(logs[0]).toContain('exited -1')
+    } finally {
+      store.close()
+    }
+  })
+})
+
+/** Aggregate with one SyntaxError-labelled failing step carrying `args`. */
+function payloadAggregate(sessionId: string, args: string): SessionAggregate {
+  const aggregate = makeAggregate(sessionId)
+  aggregate.toolCalls = 1
+  aggregate.toolSteps.push({ tool: 'write', ok: false, error: 'SyntaxError', args })
+  aggregate.toolErrors.push('SyntaxError')
+  return aggregate
+}
+
+describe('M4 Track B spec runner acceptance (real vitest)', () => {
+  // Scratch lives inside the package so the spawned run resolves the
+  // `from 'vitest'` import through the workspace node_modules.
+  const pkgRoot = dirname(dirname(fileURLToPath(new URL(import.meta.url))))
+
+  function realVitestBin(): string {
+    const bin = resolveVitestBin(dirname(fileURLToPath(new URL(import.meta.url))))
+    expect(bin, 'M4 acceptance requires a real vitest binary (resolveVitestBin found none)').toBeDefined()
+    if (bin === undefined) throw new Error('real vitest binary missing')
+    return bin
+  }
+
+  async function freshRepoScratch(): Promise<string> {
+    root = await mkdtemp(join(pkgRoot, '.tmp-trackb-accept-'))
+    if (root === undefined) throw new Error('scratch root missing')
+    return root
+  }
+
+  it('ledgers exit 0 while the crash reproduces (unparseable payload)', async () => {
+    const vitestBin = realVitestBin()
+    const dir = await freshRepoScratch()
+    const store = new MetaStore({ dbPath: ':memory:' })
+    try {
+      const emitted = emitReproduction(payloadAggregate('accept-green', '{"a":}'), dir, NOW)
+      if (emitted === undefined) throw new Error('emission missing for the green aggregate')
+      const logs: string[] = []
+      await runReproduction({ file: emitted.file, vitestBin, timeoutMs: 120_000, store, now: NOW, log: (message) => logs.push(message) })
+      expect(store.listTrackBRuns(emitted.file)).toEqual([{ ts: NOW, file: emitted.file, exitCode: 0 }])
+      expect(logs).toHaveLength(1)
+      expect(logs[0]).toContain('exited 0')
+    } finally {
+      store.close()
+    }
+  }, 180_000)
+
+  it('ledgers a nonzero exit when the payload parses (valid JSON under a SyntaxError label)', async () => {
+    const vitestBin = realVitestBin()
+    const dir = await freshRepoScratch()
+    const store = new MetaStore({ dbPath: ':memory:' })
+    try {
+      const emitted = emitReproduction(payloadAggregate('accept-red', '{"a":1}'), dir, NOW)
+      if (emitted === undefined) throw new Error('emission missing for the red aggregate')
+      const logs: string[] = []
+      await runReproduction({ file: emitted.file, vitestBin, timeoutMs: 120_000, store, now: NOW, log: (message) => logs.push(message) })
+      const rows = store.listTrackBRuns(emitted.file)
+      expect(rows).toHaveLength(1)
+      expect(rows[0]?.exitCode).not.toBe(0)
+      expect(logs).toHaveLength(1)
+    } finally {
+      store.close()
+    }
+  }, 180_000)
+
+  it('SIGKILLs past the timeout and ledgers -1', async () => {
+    const vitestBin = realVitestBin()
+    const dir = await freshRepoScratch()
+    const store = new MetaStore({ dbPath: ':memory:' })
+    try {
+      const emitted = emitReproduction(payloadAggregate('accept-timeout', '{"a":}'), dir, NOW)
+      if (emitted === undefined) throw new Error('emission missing for the timeout aggregate')
+      const logs: string[] = []
+      await runReproduction({ file: emitted.file, vitestBin, timeoutMs: 500, store, now: NOW, log: (message) => logs.push(message) })
+      expect(store.listTrackBRuns(emitted.file)).toEqual([{ ts: NOW, file: emitted.file, exitCode: -1 }])
+      expect(logs).toHaveLength(1)
+    } finally {
+      store.close()
+    }
+  }, 60_000)
 })

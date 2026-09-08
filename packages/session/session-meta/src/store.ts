@@ -6,7 +6,8 @@
  * Schema v1 holds sessions + evidence. Schema v2 adds the evaluator budget
  * ledger; schema v3 adds the skill registry; schema v4 adds the replay-run
  * budget ledger; schema v5 adds the skill-sessions history; schema v6 adds
- * the promotions ledger. v1/v2/v3/v4/v5
+ * the promotions ledger; schema v7 adds the Track B spec-runner ledger.
+ * v1/v2/v3/v4/v5/v6
  * databases migrate forward automatically (new tables only — no row
  * rewrites). Anything else throws instead of migrating (repo stance).
  *
@@ -16,10 +17,10 @@
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import type { EvaluatorLedgerRow, MetaRoute, MetaSessionRow, SkillRegistryRow, SkillStatus } from './types.ts'
+import type { EvaluatorLedgerRow, MetaRoute, MetaSessionRow, SkillRegistryRow, SkillStatus, TrackBRunRow } from './types.ts'
 
-/** On-disk schema version; v1/v2/v3/v4/v5 migrate to v6, anything else throws. */
-export const META_SCHEMA_VERSION = 6
+/** On-disk schema version; v1/v2/v3/v4/v5/v6 migrate to v7, anything else throws. */
+export const META_SCHEMA_VERSION = 7
 
 /** Pipeline-promoted skills start here (probation — one regression archives). */
 export const SKILL_PROBATION_CONFIDENCE = 0.4
@@ -90,6 +91,11 @@ CREATE TABLE IF NOT EXISTS promotions(
   ts INTEGER NOT NULL,
   trigger_signature TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS trackb_runs(
+  ts INTEGER NOT NULL,
+  file TEXT NOT NULL,
+  exit_code INTEGER NOT NULL
+);
 `
 
 /** Narrow write model: one finished session plus its evidence rows. */
@@ -125,9 +131,9 @@ export class MetaStore {
     const version = this.db.prepare('PRAGMA user_version').get() as { user_version: number }
     if (version.user_version === 0) {
       this.db.exec(`PRAGMA user_version = ${META_SCHEMA_VERSION}`)
-    } else if (version.user_version === 1 || version.user_version === 2 || version.user_version === 3 || version.user_version === 4 || version.user_version === 5) {
-      // v1/v2/v3/v4/v5 → v6 are additive only (evaluator_ledger, skill_registry,
-      // replay_runs, skill_sessions, promotions, created above): stamp forward.
+    } else if (version.user_version === 1 || version.user_version === 2 || version.user_version === 3 || version.user_version === 4 || version.user_version === 5 || version.user_version === 6) {
+      // v1/v2/v3/v4/v5/v6 → v7 are additive only (evaluator_ledger, skill_registry,
+      // replay_runs, skill_sessions, promotions, trackb_runs, created above): stamp forward.
       this.db.exec(`PRAGMA user_version = ${META_SCHEMA_VERSION}`)
     } else if (version.user_version !== META_SCHEMA_VERSION) {
       const seen = version.user_version
@@ -407,6 +413,34 @@ export class MetaStore {
       'SELECT session_id, task_input FROM skill_sessions WHERE trigger_signature = ? AND session_id != ? ORDER BY ts DESC LIMIT ?',
     ).all(signature, excludeSessionId, limit) as Array<{ session_id: string; task_input: string }>
     return rows.map(row => ({ sessionId: row.session_id, taskInput: row.task_input }))
+  }
+
+  /**
+   * Record one Track B spec-runner outcome (the M4 audit trail: pass means
+   * the bug still reproduces, nonzero means the characterization failed).
+   *
+   * @param ts - Run timestamp (UTC millis, newest-first order key).
+   * @param file - Emitted spec file the run executed.
+   * @param exitCode - Process exit code (-1 on signal/timeout/spawn error).
+   * @returns No return value; one row is appended.
+   */
+  recordTrackBRun(ts: number, file: string, exitCode: number): void {
+    this.db.prepare('INSERT INTO trackb_runs(ts, file, exit_code) VALUES(?, ?, ?)').run(ts, file, exitCode)
+  }
+
+  /**
+   * List spec-runner outcomes for one emitted file, newest first.
+   *
+   * @param file - The emitted spec file to look up.
+   * @param limit - Maximum rows to return (defaults to 10); values <= 0 yield [].
+   * @returns Up to `limit` runs, newest first by ts.
+   */
+  listTrackBRuns(file: string, limit: number = 10): readonly TrackBRunRow[] {
+    if (limit <= 0) return []
+    const rows = this.db.prepare(
+      'SELECT ts, file, exit_code FROM trackb_runs WHERE file = ? ORDER BY ts DESC LIMIT ?',
+    ).all(file, limit) as Array<{ ts: number; file: string; exit_code: number }>
+    return rows.map(row => ({ ts: row.ts, file: row.file, exitCode: row.exit_code }))
   }
 
   close(): void {

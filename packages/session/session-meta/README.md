@@ -138,7 +138,7 @@ versioned (`PRAGMA user_version = 3`); mismatches throw instead of migrating.
 - `src/redact.ts` — secret scrubbing and bounds.
 - `src/store.ts` — `node:sqlite` meta store (`MetaStore`, `META_SCHEMA_VERSION`) plus the M3 skill registry (promotion lifecycle).
 - `src/curator.ts` — M3 post-promotion lifecycle signals: per-session applied/confidence moves (silence-neutral) plus the 90-day decay sweep, wired from finalize.
-- `src/trackb.ts` — M4 Track B reproduction emitter: parser-class crashes become characterization specs under `.dsh/reproductions/` (pass while the crash reproduces, fail if upstream ever accepts the payload), everything else lands in the `breakages.jsonl` upstream-PR register.
+- `src/trackb.ts` — M4 Track B reproduction emitter: parser-class crashes become characterization specs under `.dsh/reproductions/` (pass while the crash reproduces, fail if upstream ever accepts the payload), everything else lands in the `breakages.jsonl` upstream-PR register. The M4 spec runner executes each emitted spec once under the resolved Vitest binary and ledgers the exit code in `trackb_runs` (no curator hook reads it — invalidation stays reviewer-side until M5).
 - `src/types.ts` — types only.
 
 </details>

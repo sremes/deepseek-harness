@@ -16,7 +16,8 @@
  * @module @deepseek-ai/dsh-session-meta
  */
 
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
@@ -27,7 +28,7 @@ import type { MetaRoute, SessionAggregate } from './types.ts'
 import { errorNameOf, hasExplicitPersistRequest, hasRecoveredErrors, isSteeringMessage, newAggregate, observeAgentError, observeToolCall, observeToolResult, observeUserMessage, triage } from './triage.ts'
 import { isCompletedTurnEnd } from './projection.ts'
 import { applySessionSignals, sweepDecay } from './curator.ts'
-import { recordTrackB } from './trackb.ts'
+import { TRACKB_RUN_TIMEOUT_MS, recordTrackB, startReproRun } from './trackb.ts'
 import { redactString, redactValue } from './redact.ts'
 import { MetaStore } from './store.ts'
 import type { EvaluatorLlm } from './evaluator.ts'
@@ -320,8 +321,29 @@ function finalizeSession(tracker: Tracker, session: Session, ctx: Context): void
       ctx.logger.info(message)
     }, endedAt)
     if (verdict.route === 'track_b') {
-      recordTrackB(aggregate, join(tracker.home, '.dsh', 'reproductions'), endedAt, (message: string) => {
+      const emitted = recordTrackB(aggregate, join(tracker.home, '.dsh', 'reproductions'), endedAt, (message: string) => {
         ctx.logger.info(message)
+      })
+      // M4 spec runner: only the emit path has a spec to execute (breakages
+      // have no spec). Fire-and-forget on the shared pending set so
+      // settleSessionMeta awaits it; production flush stays non-blocking.
+      // DELIBERATE NON-GOAL: no curator hook reads repro outcomes — a passing
+      // repro means the bug still reproduces and attaches to a session, not a
+      // skill, so no skill earns +0.10 from it; the ledger is the audit trail
+      // and invalidation stays human/reviewer-side until M5.
+      const run = startReproRun({
+        emitted,
+        startDir: dirname(fileURLToPath(new URL(import.meta.url))),
+        timeoutMs: TRACKB_RUN_TIMEOUT_MS,
+        store: tracker.store,
+        now: endedAt,
+        log: (message: string) => {
+          ctx.logger.info(message)
+        },
+      })
+      pendingEvaluations.add(run)
+      void run.finally(() => {
+        pendingEvaluations.delete(run)
       })
     }
     /* v8 ignore start -- curator calls are contained (removal never throws); a store failure here is unreachable without a broken registry. */
