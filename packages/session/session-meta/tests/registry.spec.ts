@@ -2,7 +2,8 @@
  * Skill-registry store slice: promotion lifecycle persistence (Plan-V1 M3,
  * §§3.4/4.1/4.2). Covers every branch of `recordPromotion`,
  * `recordLive`, `recordApplication`, `applyConfidenceDelta`, and `getSkill`, the
- * replay-run budget ledger, plus the v2 → v3 and v3 → v4 migrations.
+ * replay-run budget ledger, the promotions ledger, plus the v2 → v3, v3 → v4,
+ * and v5 → v6 migrations.
  */
 
 import { mkdtemp, rm } from 'node:fs/promises'
@@ -213,6 +214,56 @@ describe('skill-registry migration', () => {
         raw.close()
       }
     } finally {
+      if (dir !== undefined) await rm(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('promotions ledger', () => {
+  it('appends one row per promote', () => {
+    const db = freshStore()
+    expect(db.countPromotionsSince(0)).toBe(0)
+    db.recordPromotion('sig-a', 'slug-a')
+    expect(db.countPromotionsSince(0)).toBe(1)
+    db.recordPromotion('sig-b', 'slug-b')
+    expect(db.countPromotionsSince(0)).toBe(2)
+  })
+
+  it('counts only rows inside the window', () => {
+    const db = freshStore()
+    db.recordPromotion('sig-a', 'slug-a')
+    db.recordPromotion('sig-b', 'slug-b')
+    expect(db.countPromotionsSince(0)).toBe(2)
+    expect(db.countPromotionsSince(Date.now() + 60_000)).toBe(0)
+  })
+
+  it('migrates a v5 database forward and stamps v6', async () => {
+    let dir: string | undefined
+    try {
+      dir = await mkdtemp(join(tmpdir(), 'dsh-meta-v5-'))
+      const path = join(dir, 'meta.db')
+      const legacy = new DatabaseSync(path)
+      legacy.exec(
+        'CREATE TABLE meta_sessions(id TEXT PRIMARY KEY); CREATE TABLE evaluator_ledger(ts INTEGER NOT NULL); CREATE TABLE skill_registry(trigger_signature TEXT PRIMARY KEY, slug TEXT NOT NULL, confidence REAL NOT NULL DEFAULT 0.40, applied_count INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT \'probation\', updated_at INTEGER NOT NULL); CREATE TABLE replay_runs(ts INTEGER NOT NULL); CREATE TABLE skill_sessions(trigger_signature TEXT NOT NULL, session_id TEXT NOT NULL, task_input TEXT NOT NULL, ts INTEGER NOT NULL, PRIMARY KEY(trigger_signature, session_id)); PRAGMA user_version = 5;',
+      )
+      legacy.close()
+      store = new MetaStore({ dbPath: path })
+      const db = store
+      db.recordPromotion('sig', 'slug')
+      expect(db.countPromotionsSince(0)).toBe(1)
+      expect(db.getSkill('sig')).toMatchObject({ slug: 'slug', status: 'probation' })
+      db.close()
+      store = undefined
+      const raw = new DatabaseSync(path)
+      try {
+        const version = raw.prepare('PRAGMA user_version').get() as { user_version: number }
+        expect(version.user_version).toBe(META_SCHEMA_VERSION)
+      } finally {
+        raw.close()
+      }
+    } finally {
+      store?.close()
+      store = undefined
       if (dir !== undefined) await rm(dir, { recursive: true, force: true })
     }
   })

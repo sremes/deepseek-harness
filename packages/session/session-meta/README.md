@@ -108,7 +108,8 @@ The M2.2 effort gate spends evaluator calls where signal exists: trivial
 sessions (few tool calls, early-only steering, no recovery) are skipped;
 explicit persist requests ("remember this", "from now on", ...) always
 evaluate. Knobs: `evaluator.minEvalToolCalls` (default 3),
-`evaluator.earlySteeringMessages` (default 1).
+`evaluator.earlySteeringMessages` (default 1). Passing drafts promote to live
+immediately under a weekly blast cap (`evaluator.maxPromotionsPerWeek`, default 3).
 
 <a id="understand-the-implementation"></a>
 ## Understand the implementation

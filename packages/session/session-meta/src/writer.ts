@@ -7,7 +7,7 @@
  * overwrites an existing skill.
  */
 
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { EvaluatorProposal, SkillDraft } from './types.ts'
 
@@ -19,6 +19,15 @@ export interface DraftProvenance {
 
 /** Cap on the frontmatter description line. */
 export const MAX_DRAFT_DESCRIPTION_CHARS = 200
+
+/** Gated-draft flag line: present while the draft is user-only. */
+export const DISABLE_MODEL_INVOCATION_LINE = 'disable-model-invocation: true'
+
+/** Draft-only footer sentence, replaced on promotion. */
+export const DRAFT_ONLY_FOOTER = 'Draft only: model invocation is disabled until the promotion pipeline passes.'
+
+/** Promoted footer sentence, carrying the provenance pointer. */
+export const PROMOTED_FOOTER = 'Promoted by the M3 pipeline; provenance above.'
 
 /**
  * Slugify free text into the skill-name grammar
@@ -89,4 +98,31 @@ export function writeSkillDraft(
   const file = join(dir, 'SKILL.md')
   writeFileSync(file, renderDraft(proposal, provenance, slug))
   return { slug, dir, file }
+}
+
+/**
+ * Promote a worker-written draft to live: remove the model-invocation flag,
+ * bump the metadata version by one, and swap the draft-only footer for the
+ * promoted footer. Writes the file back.
+ *
+ * @param dir - The skill directory holding `SKILL.md`.
+ * @returns No return value; the file is rewritten in place.
+ */
+export function promoteDraftFile(dir: string): void {
+  const file = join(dir, 'SKILL.md')
+  const text = readFileSync(file, 'utf8')
+  const lines = text.split('\n')
+  if (!lines.includes(DISABLE_MODEL_INVOCATION_LINE)) {
+    throw new Error(`session-meta: cannot promote ${file} (disable-model-invocation flag absent)`)
+  }
+  const flipped = lines
+    .filter(line => line !== DISABLE_MODEL_INVOCATION_LINE)
+    .map(line => {
+      const version = line.match(/^(\s*version:\s*)(\d+)(\s*)$/)
+      if (version !== null) return `${version[1]}${Number(version[2]) + 1}${version[3]}`
+      return line
+    })
+    .join('\n')
+    .replace(DRAFT_ONLY_FOOTER, PROMOTED_FOOTER)
+  writeFileSync(file, flipped)
 }

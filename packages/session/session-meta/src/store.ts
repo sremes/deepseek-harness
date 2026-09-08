@@ -5,7 +5,8 @@
  *
  * Schema v1 holds sessions + evidence. Schema v2 adds the evaluator budget
  * ledger; schema v3 adds the skill registry; schema v4 adds the replay-run
- * budget ledger; schema v5 adds the skill-sessions history. v1/v2/v3/v4
+ * budget ledger; schema v5 adds the skill-sessions history; schema v6 adds
+ * the promotions ledger. v1/v2/v3/v4/v5
  * databases migrate forward automatically (new tables only — no row
  * rewrites). Anything else throws instead of migrating (repo stance).
  *
@@ -17,8 +18,8 @@ import { dirname } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import type { EvaluatorLedgerRow, MetaRoute, MetaSessionRow, SkillRegistryRow, SkillStatus } from './types.ts'
 
-/** On-disk schema version; v1/v2/v3/v4 migrate to v5, anything else throws. */
-export const META_SCHEMA_VERSION = 5
+/** On-disk schema version; v1/v2/v3/v4/v5 migrate to v6, anything else throws. */
+export const META_SCHEMA_VERSION = 6
 
 /** Pipeline-promoted skills start here (probation — one regression archives). */
 export const SKILL_PROBATION_CONFIDENCE = 0.4
@@ -85,6 +86,10 @@ CREATE TABLE IF NOT EXISTS skill_sessions(
   ts INTEGER NOT NULL,
   PRIMARY KEY(trigger_signature, session_id)
 );
+CREATE TABLE IF NOT EXISTS promotions(
+  ts INTEGER NOT NULL,
+  trigger_signature TEXT NOT NULL
+);
 `
 
 /** Narrow write model: one finished session plus its evidence rows. */
@@ -120,9 +125,9 @@ export class MetaStore {
     const version = this.db.prepare('PRAGMA user_version').get() as { user_version: number }
     if (version.user_version === 0) {
       this.db.exec(`PRAGMA user_version = ${META_SCHEMA_VERSION}`)
-    } else if (version.user_version === 1 || version.user_version === 2 || version.user_version === 3 || version.user_version === 4) {
-      // v1/v2/v3/v4 → v5 are additive only (evaluator_ledger, skill_registry,
-      // replay_runs, skill_sessions, created above): stamp forward.
+    } else if (version.user_version === 1 || version.user_version === 2 || version.user_version === 3 || version.user_version === 4 || version.user_version === 5) {
+      // v1/v2/v3/v4/v5 → v6 are additive only (evaluator_ledger, skill_registry,
+      // replay_runs, skill_sessions, promotions, created above): stamp forward.
       this.db.exec(`PRAGMA user_version = ${META_SCHEMA_VERSION}`)
     } else if (version.user_version !== META_SCHEMA_VERSION) {
       const seen = version.user_version
@@ -246,6 +251,17 @@ export class MetaStore {
   }
 
   /**
+   * Promotions recorded at or after `sinceTs` (UTC millis).
+   *
+   * @param sinceTs - window start (UTC millis).
+   * @returns the promotion count in the window.
+   */
+  countPromotionsSince(sinceTs: number): number {
+    const row = this.db.prepare('SELECT COUNT(*) AS n FROM promotions WHERE ts >= ?').get(sinceTs) as { n: number }
+    return row.n
+  }
+
+  /**
    * Look up one skill-registry candidate by trigger signature.
    *
    * @param signature - The candidate `trigger_signature` (the table key).
@@ -270,18 +286,22 @@ export class MetaStore {
    * Promote a candidate skill: upsert at probation confidence. The signature
    * is the key, so one live candidate per signature holds naturally — a
    * different slug for the same signature replaces the previous row.
+   * Appends one promotions-ledger row so promotion events and registry
+   * rows stay in sync by construction.
    *
    * @param signature - The candidate `trigger_signature`.
    * @param slug - The promoted skill slug.
    * @returns No return value; the row is inserted or fully reset.
    */
   recordPromotion(signature: string, slug: string): void {
+    const now = Date.now()
     this.db.prepare(`
       INSERT INTO skill_registry(trigger_signature, slug, confidence, applied_count, status, updated_at)
       VALUES(?, ?, ${SKILL_PROBATION_CONFIDENCE}, 0, 'probation', ?)
       ON CONFLICT(trigger_signature) DO UPDATE SET
         slug=excluded.slug, confidence=excluded.confidence, applied_count=0,
-        status=excluded.status, updated_at=excluded.updated_at`).run(signature, slug, Date.now())
+        status=excluded.status, updated_at=excluded.updated_at`).run(signature, slug, now)
+    this.db.prepare('INSERT INTO promotions(ts, trigger_signature) VALUES(?, ?)').run(now, signature)
   }
 
   /**

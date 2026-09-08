@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { StreamChunk } from '@deepseek-ai/dsh-llm'
 import type { EvaluatorLlm } from '../src/evaluator.ts'
@@ -30,6 +30,7 @@ const CONFIG: EvaluationConfig = {
   maxReplaysPerDay: 8,
   minEvalToolCalls: 3,
   earlySteeringMessages: 1,
+  maxPromotionsPerWeek: 3,
   skillsDir: '',
 }
 
@@ -266,8 +267,10 @@ describe('evaluateTrackASession', () => {
     const aggregate = { ...makeAggregate('s1'), origin: 'headless' as const }
     const logs: string[] = []
     const outcome = await evaluateTrackASession(deps(home, okLlm(), logs), { ...CONFIG, skillsDir: skills }, aggregate)
-    expect(outcome).toEqual({ decision: 'draft-written', draftSlug: 'destructive-path-confirm' })
+    expect(outcome).toEqual({ decision: 'promoted', draftSlug: 'destructive-path-confirm' })
     expect(existsSync(join(skills, 'destructive-path-confirm', 'SKILL.md'))).toBe(true)
+    expect(readFileSync(join(skills, 'destructive-path-confirm', 'SKILL.md'), 'utf8')).not.toContain('disable-model-invocation: true')
+    expect(store?.getSkill('destructive-path-confirm')).toMatchObject({ status: 'live' })
     expect(existsSync(steeringFilePath(home, 's1'))).toBe(false)
     expect(existsSync(join(home, 'meta', 'steering', 'processed', 's1.json'))).toBe(true)
     expect(store?.countEvaluationsSince(0)).toBe(1)
@@ -279,8 +282,9 @@ describe('evaluateTrackASession', () => {
     const aggregate = makeAggregate('s9')
     aggregate.steeringTexts.push('not like that')
     const outcome = await evaluateTrackASession(deps(home, okLlm(), []), { ...CONFIG, skillsDir: skills }, aggregate)
-    expect(outcome.decision).toBe('draft-written')
+    expect(outcome.decision).toBe('promoted')
     expect(existsSync(join(skills, 'destructive-path-confirm', 'SKILL.md'))).toBe(true)
+    expect(readFileSync(join(skills, 'destructive-path-confirm', 'SKILL.md'), 'utf8')).not.toContain('disable-model-invocation: true')
   })
 
   it('vetoes L0-failing drafts before any file lands and ledgers the spend', async () => {
@@ -315,8 +319,10 @@ describe('evaluateTrackASession', () => {
     const runner = new FakeReplayRunner([replayOutcome({}), replayOutcome({})])
     const logs: string[] = []
     const outcome = await evaluateTrackASession(deps(home, judgePassLlm(), logs, runner), { ...CONFIG, skillsDir: skills }, l2Aggregate('s1'))
-    expect(outcome).toEqual({ decision: 'draft-written', draftSlug: 'destructive-path-confirm' })
+    expect(outcome).toEqual({ decision: 'promoted', draftSlug: 'destructive-path-confirm' })
     expect(existsSync(join(skills, 'destructive-path-confirm', 'SKILL.md'))).toBe(true)
+    expect(readFileSync(join(skills, 'destructive-path-confirm', 'SKILL.md'), 'utf8')).not.toContain('disable-model-invocation: true')
+    expect(store?.getSkill('destructive-path-confirm')).toMatchObject({ status: 'live' })
     expect(store?.countReplayRunsSince(0)).toBe(2)
     expect(store?.countEvaluationsSince(0)).toBe(1)
   })
@@ -366,8 +372,9 @@ describe('evaluateTrackASession', () => {
     const runner = new FakeReplayRunner([replayOutcome({}), replayOutcome({})])
     const logs: string[] = []
     const outcome = await evaluateTrackASession(deps(home, okLlm(), logs, runner), { ...CONFIG, skillsDir: skills, maxReplaysPerDay: 1 }, l2Aggregate('s1'))
-    expect(outcome).toEqual({ decision: 'draft-written', draftSlug: 'destructive-path-confirm' })
+    expect(outcome).toEqual({ decision: 'promoted', draftSlug: 'destructive-path-confirm' })
     expect(existsSync(join(skills, 'destructive-path-confirm', 'SKILL.md'))).toBe(true)
+    expect(readFileSync(join(skills, 'destructive-path-confirm', 'SKILL.md'), 'utf8')).not.toContain('disable-model-invocation: true')
     expect(store?.countReplayRunsSince(0)).toBe(0)
     expect(logs.join('\n')).toMatch(/l2 skipped \(replay budget\)/)
   })
@@ -381,8 +388,9 @@ describe('evaluateTrackASession', () => {
     aggregate.openingTask = '   '
     const logs: string[] = []
     const outcome = await evaluateTrackASession(deps(home, okLlm(), logs, runner), { ...CONFIG, skillsDir: skills }, aggregate)
-    expect(outcome).toEqual({ decision: 'draft-written', draftSlug: 'destructive-path-confirm' })
+    expect(outcome).toEqual({ decision: 'promoted', draftSlug: 'destructive-path-confirm' })
     expect(existsSync(join(skills, 'destructive-path-confirm', 'SKILL.md'))).toBe(true)
+    expect(readFileSync(join(skills, 'destructive-path-confirm', 'SKILL.md'), 'utf8')).not.toContain('disable-model-invocation: true')
     expect(store?.countReplayRunsSince(0)).toBe(0)
     expect(logs.join('\n')).toMatch(/l2 skipped \(no task input\)/)
   })
@@ -393,8 +401,9 @@ describe('evaluateTrackASession', () => {
     const runner = new FakeReplayRunner([replayOutcome({}), replayOutcome({})])
     const logs: string[] = []
     const outcome = await evaluateTrackASession(deps(home, judgePassLlm(), logs, runner), { ...CONFIG, skillsDir: skills }, l2Aggregate('s1'))
-    expect(outcome).toEqual({ decision: 'draft-written', draftSlug: 'destructive-path-confirm' })
+    expect(outcome).toEqual({ decision: 'promoted', draftSlug: 'destructive-path-confirm' })
     expect(existsSync(join(skills, 'destructive-path-confirm', 'SKILL.md'))).toBe(true)
+    expect(readFileSync(join(skills, 'destructive-path-confirm', 'SKILL.md'), 'utf8')).not.toContain('disable-model-invocation: true')
     expect(store?.countReplayRunsSince(0)).toBe(2)
     expect(logs.join('\n')).toMatch(/l3 skipped \(no history\)/)
   })
@@ -462,9 +471,24 @@ describe('evaluateTrackASession', () => {
     const runner = new FakeReplayRunner([replayOutcome({}), replayOutcome({})])
     const logs: string[] = []
     const outcome = await evaluateTrackASession(deps(home, judgePassLlm(), logs, runner), { ...CONFIG, skillsDir: skills, maxReplaysPerDay: 2 }, l2Aggregate('s1'))
-    expect(outcome).toEqual({ decision: 'draft-written', draftSlug: 'destructive-path-confirm' })
+    expect(outcome).toEqual({ decision: 'promoted', draftSlug: 'destructive-path-confirm' })
     expect(existsSync(join(skills, 'destructive-path-confirm', 'SKILL.md'))).toBe(true)
+    expect(readFileSync(join(skills, 'destructive-path-confirm', 'SKILL.md'), 'utf8')).not.toContain('disable-model-invocation: true')
     expect(store?.countReplayRunsSince(0)).toBe(2)
     expect(logs.join('\n')).toMatch(/l3 skipped \(replay budget\)/)
+  })
+
+  it('holds at probation over the weekly promotion cap', async () => {
+    const home = await freshHome()
+    const skills = join(home, 'skills')
+    store?.recordPromotion('cap-sig-1', 'cap-slug-1')
+    store?.recordPromotion('cap-sig-2', 'cap-slug-2')
+    store?.recordPromotion('cap-sig-3', 'cap-slug-3')
+    const logs: string[] = []
+    const outcome = await evaluateTrackASession(deps(home, okLlm(), logs), { ...CONFIG, skillsDir: skills }, l2Aggregate('s1'))
+    expect(outcome).toEqual({ decision: 'draft-written', draftSlug: 'destructive-path-confirm' })
+    expect(readFileSync(join(skills, 'destructive-path-confirm', 'SKILL.md'), 'utf8')).toContain('disable-model-invocation: true')
+    expect(store?.getSkill('destructive-path-confirm')).toMatchObject({ status: 'probation' })
+    expect(logs.join('\n')).toMatch(/promotion capped \(blast radius\), held at probation/)
   })
 })

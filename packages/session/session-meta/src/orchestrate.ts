@@ -21,7 +21,7 @@ import { parseSteeringFile, processedSteeringDir, steeringFilePath } from './ste
 import { hasRecoveredErrors } from './triage.ts'
 import type { MetaStore } from './store.ts'
 import type { EvaluatorProposal, SessionAggregate, SteeringRecord } from './types.ts'
-import { renderDraft, slugify, writeSkillDraft } from './writer.ts'
+import { renderDraft, slugify, writeSkillDraft, promoteDraftFile } from './writer.ts'
 
 /** Whether a steering file exists for one session (flush-path pre-check). */
 export function hasSteeringFile(home: string, sessionId: string): boolean {
@@ -35,6 +35,7 @@ export interface EvaluationConfig extends EvaluatorRoute {
   readonly maxReplaysPerDay: number
   readonly minEvalToolCalls: number
   readonly earlySteeringMessages: number
+  readonly maxPromotionsPerWeek: number
   readonly skillsDir: string
 }
 
@@ -47,6 +48,9 @@ export interface EvaluationDeps {
   readonly now: () => number
   readonly log: (message: string) => void
 }
+
+/** Rolling window for the weekly live-promotion blast cap (protocol constant). */
+export const PROMOTION_WINDOW_MS = 7 * 24 * 3600 * 1000
 
 /** Outcome of one Track A evaluation attempt. */
 export interface EvaluationOutcome {
@@ -268,9 +272,11 @@ export async function evaluateTrackASession(
       }
     }
   }
-  // M3 promotion wiring (Plan-V1 §§3.4/4.1): an L0+L1-passing draft enters
-  // the registry on probation at 0.40. The probation→live transition stays
-  // unwired until L2–L4 verdicts exist to justify it.
+  // M3 promotion (Plan-V1 §§3.4/4.1): passing the pipeline IS promotion —
+  // the draft flips to live immediately. Probation is a confidence status
+  // (0.40, one -0.15 regression archives), not a waiting room. L4-full
+  // weekly (later slice) acts as demote-only. Live flips stay under the
+  // weekly blast cap; over-cap passes hold at probation.
   deps.store.recordPromotion(result.proposal.triggerSignature, draft.slug)
   deps.store.recordPromotionSession(
     result.proposal.triggerSignature,
@@ -278,6 +284,26 @@ export async function evaluateTrackASession(
     taskInputUsedForL2 ?? aggregate.openingTask ?? projection.goal,
     now,
   )
+  if (deps.store.countPromotionsSince(now - PROMOTION_WINDOW_MS) <= config.maxPromotionsPerWeek) {
+    deps.store.recordLive(result.proposal.triggerSignature)
+    promoteDraftFile(draft.dir)
+    deps.store.recordEvaluation({
+      ts: now,
+      sessionId: aggregate.sessionId,
+      inputTokens: result.inputTokens,
+      outputTokens: result.outputTokens,
+      decision: 'promoted',
+      draftSlug: draft.slug,
+    })
+    if (fileRecord !== undefined) {
+      const processedDir = processedSteeringDir(deps.home)
+      mkdirSync(processedDir, { recursive: true })
+      renameSync(steeringFilePath(deps.home, aggregate.sessionId), join(processedDir, `${aggregate.sessionId}.json`))
+    }
+    deps.log(`session-meta: promoted ${draft.slug} live for ${aggregate.sessionId}`)
+    return { decision: 'promoted', draftSlug: draft.slug }
+  }
+  deps.log(`session-meta: promotion capped (blast radius), held at probation for ${aggregate.sessionId}`)
   deps.store.recordEvaluation({
     ts: now,
     sessionId: aggregate.sessionId,

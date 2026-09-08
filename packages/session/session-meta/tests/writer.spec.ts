@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { EvaluatorProposal } from '../src/types.ts'
-import { MAX_DRAFT_DESCRIPTION_CHARS, renderDraft, slugify, writeSkillDraft } from '../src/writer.ts'
+import { MAX_DRAFT_DESCRIPTION_CHARS, renderDraft, slugify, writeSkillDraft, promoteDraftFile } from '../src/writer.ts'
 
 const PROPOSAL: EvaluatorProposal = {
   intent: 'Confirm destructive paths before running them',
@@ -96,5 +96,52 @@ describe('writeSkillDraft', () => {
     expect(draft.slug).toBe('destructive-path-confirm-2')
     expect(readFileSync(join(dir, 'SKILL.md'), 'utf8')).toBe('taken')
     expect(existsSync(draft.file)).toBe(true)
+  })
+})
+
+describe('promoteDraftFile', () => {
+  it('flips a worker-written draft to live', async () => {
+    root = await mkdtemp(join(tmpdir(), 'dsh-promote-'))
+    if (root === undefined) throw new Error('tmp root missing')
+    const home: string = root
+    const draft = writeSkillDraft(home, PROPOSAL, { sessions: ['s1'], mode: 'headless' })
+    promoteDraftFile(draft.dir)
+    const text = readFileSync(draft.file, 'utf8')
+    expect(text).not.toContain('disable-model-invocation: true')
+    expect(text).toContain('version: 2')
+    expect(text).not.toContain('Draft only: model invocation is disabled until the promotion pipeline passes.')
+    expect(text).toContain('Promoted by the M3 pipeline; provenance above.')
+  })
+
+  it('throws when the flag line is absent', async () => {
+    root = await mkdtemp(join(tmpdir(), 'dsh-promote-'))
+    if (root === undefined) throw new Error('tmp root missing')
+    const home: string = root
+    const dir = join(home, 'live-skill')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'SKILL.md'), '---\nname: live-skill\n---\n')
+    expect(() => promoteDraftFile(dir)).toThrow(/disable-model-invocation/)
+  })
+
+  it('bumps the metadata version by one', async () => {
+    root = await mkdtemp(join(tmpdir(), 'dsh-promote-'))
+    if (root === undefined) throw new Error('tmp root missing')
+    const home: string = root
+    const draft = writeSkillDraft(home, PROPOSAL, { sessions: ['s1'], mode: 'headless' })
+    expect(readFileSync(draft.file, 'utf8')).toContain('version: 1')
+    promoteDraftFile(draft.dir)
+    expect(readFileSync(draft.file, 'utf8')).toContain('version: 2')
+  })
+
+  it('swaps the draft-only footer for the promoted footer', async () => {
+    root = await mkdtemp(join(tmpdir(), 'dsh-promote-'))
+    if (root === undefined) throw new Error('tmp root missing')
+    const home: string = root
+    const draft = writeSkillDraft(home, PROPOSAL, { sessions: ['s1'], mode: 'headless' })
+    expect(readFileSync(draft.file, 'utf8')).toContain('Draft only: model invocation is disabled until the promotion pipeline passes.')
+    promoteDraftFile(draft.dir)
+    const text = readFileSync(draft.file, 'utf8')
+    expect(text).not.toContain('Draft only: model invocation is disabled until the promotion pipeline passes.')
+    expect(text).toContain('Promoted by the M3 pipeline; provenance above.')
   })
 })

@@ -71,6 +71,8 @@ export interface EvaluatorInputConfig {
   minEvalToolCalls?: number
   /** Steering at or before this many assistant messages counts as early (trivial). */
   earlySteeringMessages?: number
+  /** Live promotions allowed per rolling 7-day window (blast cap). Defaults to 3. */
+  maxPromotionsPerWeek?: number
 }
 
 export const Config: z<Config> = z.object({
@@ -116,6 +118,7 @@ const EVALUATOR_DEFAULTS = {
   maxReplaysPerDay: 8,
   minEvalToolCalls: 3,
   earlySteeringMessages: 1,
+  maxPromotionsPerWeek: 3,
 } as const
 
 /**
@@ -142,6 +145,7 @@ export function resolveEvaluation(config: Config, home: string): EvaluationConfi
     maxReplaysPerDay: raw.maxReplaysPerDay ?? EVALUATOR_DEFAULTS.maxReplaysPerDay,
     minEvalToolCalls: raw.minEvalToolCalls ?? EVALUATOR_DEFAULTS.minEvalToolCalls,
     earlySteeringMessages: raw.earlySteeringMessages ?? EVALUATOR_DEFAULTS.earlySteeringMessages,
+    maxPromotionsPerWeek: raw.maxPromotionsPerWeek ?? EVALUATOR_DEFAULTS.maxPromotionsPerWeek,
     skillsDir: config.skillsDir === undefined || config.skillsDir === '' ? join(home, 'skills') : config.skillsDir,
   }
 }

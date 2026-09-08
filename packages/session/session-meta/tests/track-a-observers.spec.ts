@@ -186,6 +186,7 @@ describe('resolveEvaluation', () => {
       maxReplaysPerDay: 8,
       minEvalToolCalls: 3,
       earlySteeringMessages: 1,
+      maxPromotionsPerWeek: 3,
       skillsDir: '/home/skills',
     })
   })
