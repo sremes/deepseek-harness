@@ -27,6 +27,7 @@ import type { MetaRoute, SessionAggregate } from './types.ts'
 import { errorNameOf, hasExplicitPersistRequest, hasRecoveredErrors, isSteeringMessage, newAggregate, observeAgentError, observeToolCall, observeToolResult, observeUserMessage, triage } from './triage.ts'
 import { isCompletedTurnEnd } from './projection.ts'
 import { applySessionSignals, sweepDecay } from './curator.ts'
+import { recordTrackB } from './trackb.ts'
 import { redactString, redactValue } from './redact.ts'
 import { MetaStore } from './store.ts'
 import type { EvaluatorLlm } from './evaluator.ts'
@@ -318,6 +319,11 @@ function finalizeSession(tracker: Tracker, session: Session, ctx: Context): void
     sweepDecay(tracker.store, tracker.evaluation.skillsDir, (message: string) => {
       ctx.logger.info(message)
     }, endedAt)
+    if (verdict.route === 'track_b') {
+      recordTrackB(aggregate, join(tracker.home, '.dsh', 'reproductions'), endedAt, (message: string) => {
+        ctx.logger.info(message)
+      })
+    }
     /* v8 ignore start -- curator calls are contained (removal never throws); a store failure here is unreachable without a broken registry. */
   } catch (error) {
     ctx.logger.warn(`session-meta: lifecycle signals failed: ${String(error)}`)
