@@ -328,6 +328,8 @@
       "@deepseek-ai/dsh-session-log-deepseek": ["./packages/session/session-log-deepseek/src"],
       "@deepseek-ai/dsh-session-log-deepseek/invariant": ["./packages/session/session-log-deepseek/src/invariant.ts"],
       "@deepseek-ai/dsh-session-log-export": ["./packages/session-query/session-log-export/src"],
+      "@deepseek-ai/dsh-session-meta": ["./packages/session/session-meta/src"],
+      "@deepseek-ai/dsh-session-meta-replay": ["./packages/session/session-meta-replay/src"],
       "@deepseek-ai/dsh-session-persistence": ["./packages/session/session-persistence/src"],
       "@deepseek-ai/dsh-session-persistence-jsonl": ["./packages/session/session-persistence-jsonl/src"],
       "@deepseek-ai/dsh-session-projection": ["./packages/session/session-projection/src"],
