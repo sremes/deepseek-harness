@@ -25,6 +25,8 @@ import type {} from '@deepseek-ai/dsh-command-feedback'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import type { MetaRoute, SessionAggregate } from './types.ts'
 import { errorNameOf, hasExplicitPersistRequest, hasRecoveredErrors, isSteeringMessage, newAggregate, observeAgentError, observeToolCall, observeToolResult, observeUserMessage, triage } from './triage.ts'
+import { isCompletedTurnEnd } from './projection.ts'
+import { applySessionSignals, sweepDecay } from './curator.ts'
 import { redactString, redactValue } from './redact.ts'
 import { MetaStore } from './store.ts'
 import type { EvaluatorLlm } from './evaluator.ts'
@@ -300,6 +302,27 @@ function finalizeSession(tracker: Tracker, session: Session, ctx: Context): void
   })
   const scrubbed = redactString(aggregate.sessionId, {})
   ctx.logger.info(`session-meta: session ${scrubbed.text} -> ${verdict.route} (${verdict.reasons.join(', ')})`)
+  try {
+    applySessionSignals(
+      tracker.store,
+      tracker.evaluation.skillsDir,
+      (message: string) => {
+        ctx.logger.info(message)
+      },
+      {
+        skillsConsulted: aggregate.skillsConsulted,
+        steeringEvents: aggregate.steeringEvents,
+        completed: isCompletedTurnEnd(aggregate.turnEndReason),
+      },
+    )
+    sweepDecay(tracker.store, tracker.evaluation.skillsDir, (message: string) => {
+      ctx.logger.info(message)
+    }, endedAt)
+    /* v8 ignore start -- curator calls are contained (removal never throws); a store failure here is unreachable without a broken registry. */
+  } catch (error) {
+    ctx.logger.warn(`session-meta: lifecycle signals failed: ${String(error)}`)
+  }
+  /* v8 ignore stop */
   if (
     shouldEvaluateTrackA(
       verdict.route,

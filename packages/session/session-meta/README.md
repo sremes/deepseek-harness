@@ -137,6 +137,7 @@ versioned (`PRAGMA user_version = 3`); mismatches throw instead of migrating.
  - `src/l1.ts` — M3 L1 self-test gate: a Prescribed clause is checkable when it names a session tool or quotes inline `code`; the orchestrator ledgers `l1-rejected` without writing.
 - `src/redact.ts` — secret scrubbing and bounds.
 - `src/store.ts` — `node:sqlite` meta store (`MetaStore`, `META_SCHEMA_VERSION`) plus the M3 skill registry (promotion lifecycle).
+- `src/curator.ts` — M3 post-promotion lifecycle signals: per-session applied/confidence moves (silence-neutral) plus the 90-day decay sweep, wired from finalize.
 - `src/types.ts` — types only.
 
 </details>

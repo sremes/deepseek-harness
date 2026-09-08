@@ -77,7 +77,14 @@ export function recoveryMap(steps: ReadonlyArray<{ tool: string; ok: boolean; ar
   return recovered
 }
 
-function isCompletedTurnEnd(encodedReason: string | undefined): boolean {
+/**
+ * Whether a JSON-encoded turn-end reason is a `completed` turn. Shared with
+ * the M3 curator: completion has one definition (M2.2).
+ *
+ * @param encodedReason - JSON-encoded turn-end reason, if any.
+ * @returns True only when the reason parses with `kind: 'completed'`.
+ */
+export function isCompletedTurnEnd(encodedReason: string | undefined): boolean {
   if (encodedReason === undefined) return false
   try {
     const reason = JSON.parse(encodedReason) as { kind?: unknown }

@@ -17,7 +17,7 @@
  */
 
 import type { MetaRoute, MetaTriage, SessionAggregate } from './types.ts'
-import { recoveryMap } from './projection.ts'
+import { isCompletedTurnEnd, recoveryMap } from './projection.ts'
 import { redactString } from './redact.ts'
 
 /** Tool steps retained per aggregate; beyond this the projection counts truncation. */
@@ -346,13 +346,4 @@ export function triage(aggregate: SessionAggregate): MetaTriage {
   }
   if (route === 'no_op') reasons.push('no-signal')
   return { route, reasons }
-}
-
-function isCompletedTurnEnd(encodedReason: string): boolean {
-  try {
-    const reason = JSON.parse(encodedReason) as { kind?: unknown }
-    return reason.kind === 'completed'
-  } catch {
-    return false
-  }
 }

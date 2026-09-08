@@ -262,6 +262,26 @@ export class MetaStore {
   }
 
   /**
+   * List every skill-registry row (the M3 post-promotion lifecycle sweep
+   * input; Plan-V1 §§3.4/4.2).
+   *
+   * @returns All registry rows in key order.
+   */
+  listSkills(): readonly SkillRegistryRow[] {
+    const rows = this.db.prepare(
+      'SELECT trigger_signature, slug, confidence, applied_count, status, updated_at FROM skill_registry ORDER BY trigger_signature',
+    ).all() as Array<Record<string, unknown>>
+    return rows.map(row => ({
+      triggerSignature: row['trigger_signature'] as string,
+      slug: row['slug'] as string,
+      confidence: row['confidence'] as number,
+      appliedCount: row['applied_count'] as number,
+      status: row['status'] as SkillStatus,
+      updatedAt: row['updated_at'] as number,
+    }))
+  }
+
+  /**
    * Look up one skill-registry candidate by trigger signature.
    *
    * @param signature - The candidate `trigger_signature` (the table key).
