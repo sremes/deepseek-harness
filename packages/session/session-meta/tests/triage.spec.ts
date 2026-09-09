@@ -129,6 +129,30 @@ describe('triage', () => {
     observeToolError(aggregate, 'SyntaxError')
     expect(triage(aggregate).route).toBe('track_b')
   })
+
+  it('tags env-only tool errors with env-blocked and keeps the route', () => {
+    for (const name of ['SandboxUnavailableError', 'MISSING_CREDENTIAL']) {
+      const aggregate = newAggregate('s', 0)
+      observeToolError(aggregate, name)
+      const verdict = triage(aggregate)
+      expect(verdict.route).toBe('track_b')
+      expect(verdict.reasons).toContain('env-blocked')
+    }
+  })
+
+  it('withholds env-blocked when any non-env signal exists', () => {
+    const mixed = newAggregate('s', 0)
+    observeToolError(mixed, 'SandboxUnavailableError')
+    observeToolError(mixed, 'SyntaxError')
+    expect(triage(mixed).reasons).not.toContain('env-blocked')
+    const agent = newAggregate('s', 0)
+    observeToolError(agent, 'MISSING_CREDENTIAL')
+    observeAgentError(agent, 'LlmError')
+    expect(triage(agent).reasons).not.toContain('env-blocked')
+    const generic = newAggregate('s', 0)
+    observeToolError(generic, 'E_TIMEOUT')
+    expect(triage(generic).reasons).not.toContain('env-blocked')
+  })
 })
 
 describe('hasRecoveredErrors', () => {

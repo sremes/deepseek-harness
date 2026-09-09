@@ -130,6 +130,20 @@ const TRACK_B_ERROR_NAMES: ReadonlySet<string> = new Set([
   'ERR_TOOL_SCHEMA_VIOLATION',
 ])
 
+/**
+ * Environment-blocked error names: setup/sandbox failures, never product
+ * faults. `SandboxUnavailableError` is thrown by the shell sandbox backends
+ * when no runner backend exists; `MISSING_CREDENTIAL` is raised by the LLM
+ * providers when no key resolves. Tag-only (Plan-V1 §5.2): sessions whose
+ * every failure signal is env-class keep their route and gain the
+ * `env-blocked` reason, so the Track B corpus stays countable without
+ * rerouting anything.
+ */
+const ENV_BLOCKED_ERROR_NAMES: ReadonlySet<string> = new Set([
+  'SandboxUnavailableError',
+  'MISSING_CREDENTIAL',
+])
+
 function pushUnique(target: string[], name: string): void {
   if (!target.includes(name)) target.push(name)
 }
@@ -327,6 +341,14 @@ export function triage(aggregate: SessionAggregate): MetaTriage {
   for (const name of aggregate.agentErrors) reasons.push(`agent-error:${name}`)
   const turnFailed = aggregate.turnEndReason !== undefined && !isCompletedTurnEnd(aggregate.turnEndReason)
   if (turnFailed) reasons.push(`turn-end:${aggregate.turnEndReason}`)
+  // Tag-only env-block: every tool error is env-class and no structural or
+  // agent signal exists. The route is untouched — the tag only makes the
+  // env share countable for the future graceful-degradation corpus.
+  const envOnly = aggregate.toolErrors.length > 0 &&
+    aggregate.toolErrors.every(name => ENV_BLOCKED_ERROR_NAMES.has(name)) &&
+    structural.length === 0 &&
+    aggregate.agentErrors.length === 0
+  if (envOnly) reasons.push('env-blocked')
   if (structural.length > 0 || aggregate.agentErrors.length > 0 || turnFailed) {
     route = 'track_b'
   } else if (aggregate.toolErrors.length > 0) {

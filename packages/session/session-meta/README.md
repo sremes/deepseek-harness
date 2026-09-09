@@ -87,6 +87,8 @@ SELECT route, COUNT(*) FROM meta_sessions GROUP BY route;
 
 Result call ids are read from top-level `callId`, `message.callId`, `message.source.callId`, or content-block `toolCallId` (live `dsh-tool-result` shape); error names without step evidence still count, but never prove recovery.
 
+Sessions whose every tool error is environment-class (`SandboxUnavailableError`, `MISSING_CREDENTIAL`) and which carry no structural or agent signal keep the `track_b` route and gain the `env-blocked` reason, so the environment share of the Track B corpus is countable without rerouting anything.
+
 Inbox events whose message source is not human (`agent-message` relays, tool
 frames, plugin notices) are never steering.
 
