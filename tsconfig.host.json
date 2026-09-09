@@ -204,6 +204,7 @@
     { "path": "./packages/context/session-reference" },
     { "path": "./packages/interaction/user-questions" },
     { "path": "./packages/interaction/user-approval" },
+    { "path": "./packages/interaction/approval-gate" },
     { "path": "./packages/interaction/permission-presets" },
     { "path": "./packages/core/tools" },
     { "path": "./packages/core/agent-tool-presentation" },

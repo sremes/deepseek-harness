@@ -149,6 +149,8 @@ Docs accompany every code change: update affected README and JSDoc contracts tog
 
 This fork does not maintain Chinese mirrors for `packages/session/session-meta` and `packages/llm/llm-pi-ai`: both are excluded in `scripts/translation-pairing.manifest.json` and their `README.zh.md` files are deleted. Worker briefs for these packages must say "EN README only, do not touch any .zh.md". Neighbor ZH files link to the EN files; if the pairing gate flags a diverged link after a deletion, repoint the link at the EN file and re-record with `verify-translation-pairing --write <EN-paths...>`.
 
+Fork-owned packages (`packages/interaction/approval-gate` first) ship EN-only docs with manifest exclusions and no ZH mirrors: unverified machine Chinese is worse than none, and upstream can translate on merge. Their Agent Notes are EN-only under the same exclusion. Invoke `dsh-translate-docs` only to retire this divergence deliberately, never incidentally.
+
 ## Editing these instructions
 
 `CLAUDE.md` symlinks `AGENTS.md` at root and `packages/`; edit the real file. Keep each rule self-contained while linking high-level docs. Condense when clarity survives; raise a `verify-doc-budgets` ceiling when the required content genuinely needs more space.

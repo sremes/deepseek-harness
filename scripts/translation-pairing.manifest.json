@@ -10,6 +10,8 @@
     "docs/i18n/translation-prompt.md",
     "packages/llm/llm-pi-ai/README.md",
     "packages/session/session-meta/README.md",
-    "packages/session/session-meta-replay/README.md"
+    "packages/session/session-meta-replay/README.md",
+    "packages/interaction/approval-gate/README.md",
+    ".agents/notes/implemented/feature/2026-09-09-approval-gate-llm-answerer.md"
   ]
 }
