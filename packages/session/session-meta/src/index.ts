@@ -96,6 +96,8 @@ interface Tracker {
   readonly maxEvidence: number
   readonly home: string
   readonly evaluation: EvaluationConfig
+  /** Sessions with a queued or settled Track A evaluation: flush fires per batch, evaluation runs once. */
+  readonly evaluatedSessions: Set<string>
 }
 
 /**
@@ -211,6 +213,8 @@ export function shouldEvaluateTrackA(
 
 /** Queue one Track A evaluation without blocking flush/dispose. */
 function queueEvaluation(tracker: Tracker, ctx: Context, aggregate: SessionAggregate): void {
+  if (tracker.evaluatedSessions.has(aggregate.sessionId)) return
+  tracker.evaluatedSessions.add(aggregate.sessionId)
   const run = evaluateTrackASession(
     {
       store: tracker.store,
@@ -408,10 +412,15 @@ export function apply(ctx: Context, config: Config): void {
     maxEvidence: config.maxEvidencePerSession ?? 200,
     home,
     evaluation: resolveEvaluation(config, home),
+    evaluatedSessions: new Set(),
   }
   ctx.effect(() => () => {
     store.close()
   })
+  // Drain handle for one-shot hosts: the headless runner awaits it after
+  // flush so fire-and-forget evaluations and repro runs settle instead of
+  // dying with the process. Absent hosts ignore it.
+  ctx.provide('sessionMeta', { settle: () => settleSessionMeta() })
   ctx.on('session/event', (session, event) => {
     observeEvent(tracker, session, event)
   })

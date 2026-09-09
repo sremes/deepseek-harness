@@ -7,12 +7,13 @@ import { projectSession } from '../src/projection.ts'
 
 const ROUTE = { provider: 'flash', model: 'flash-1', maxInputBytes: 12000, maxOutputTokens: 2000, timeoutMs: 5000 }
 
-function fakeLlm(chunks: readonly StreamChunk[], seen?: { provider?: string; model?: string }): EvaluatorLlm {
+function fakeLlm(chunks: readonly StreamChunk[], seen?: { provider?: string; model?: string; sessionId?: string }): EvaluatorLlm {
   return {
-    async *stream(options: { provider: string; model: string }): AsyncIterable<StreamChunk> {
+    async *stream(options: { provider: string; model: string; sessionId?: string }): AsyncIterable<StreamChunk> {
       if (seen !== undefined) {
         seen.provider = options.provider
         seen.model = options.model
+        seen.sessionId = options.sessionId
       }
       yield* chunks
     },
@@ -23,6 +24,7 @@ function input(intentHint?: string) {
   const aggregate = makeAggregate('s1')
   aggregate.openingTask = 'do x'
   return {
+    sessionId: 's1',
     projection: projectSession(aggregate),
     steering: [{ sessionId: 's1', originalTask: 'do x', correction: 'do y', ...(intentHint === undefined ? {} : { intentHint }) }],
   }
@@ -111,12 +113,12 @@ describe('parseProposal', () => {
 
 describe('runEvaluator', () => {
   it('returns the validated proposal with measured usage on the routed model', async () => {
-    const seen: { provider?: string; model?: string } = {}
+    const seen: { provider?: string; model?: string; sessionId?: string } = {}
     const result = await runEvaluator(fakeLlm(textChunks(VALID_PROPOSAL_JSON, { inputTokens: 11, outputTokens: 22 }), seen), ROUTE, input())
     expect(result.proposal.triggerSignature).toBe('destructive-path-confirm')
     expect(result.inputTokens).toBe(11)
     expect(result.outputTokens).toBe(22)
-    expect(seen).toEqual({ provider: 'flash', model: 'flash-1' })
+    expect(seen).toEqual({ provider: 'flash', model: 'flash-1', sessionId: 's1' })
   })
 
   it('reports zero usage when the adapter omits it', async () => {

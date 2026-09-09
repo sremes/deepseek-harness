@@ -21,6 +21,7 @@ export interface EvaluatorLlm {
     system?: string | undefined
     maxTokens?: number | undefined
     signal?: AbortSignal | undefined
+    sessionId?: string | undefined
   }): AsyncIterable<StreamChunk>
 }
 
@@ -35,6 +36,8 @@ export interface EvaluatorRoute {
 
 /** Evaluator input: projection plus every steering source. */
 export interface EvaluatorInput {
+  /** Owning session id: affinity key for the model call, never prompt content. */
+  readonly sessionId: string
   readonly projection: SessionProjection
   readonly steering: readonly SteeringRecord[]
   /** Existing draft signatures (cheap dedup hint; full merge is M3). */
@@ -172,14 +175,15 @@ export async function runEvaluator(
     system: EVALUATOR_SYSTEM,
     maxTokens: route.maxOutputTokens,
     signal: combined,
+    sessionId: input.sessionId,
   })) {
     combined.throwIfAborted()
     assembler.push(chunk)
   }
   combined.throwIfAborted()
-  const finish = assembler.finish as { kind?: unknown }
+  const finish = assembler.finish as { kind?: unknown; failure?: unknown }
   if (typeof finish.kind === 'string' && (finish.kind === 'length' || finish.kind.includes('error'))) {
-    throw new Error(`session-meta: evaluator call finished with ${finish.kind}`)
+    throw new Error(`session-meta: evaluator call finished with ${finish.kind}: ${JSON.stringify(finish.failure ?? null).slice(0, 300)}`)
   }
   const blocks = assembler.blocks()
   if (blocks.some(block => block.type === 'tool-call')) {

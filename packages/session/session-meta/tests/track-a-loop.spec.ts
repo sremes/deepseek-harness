@@ -168,6 +168,38 @@ describe('Track A loop wiring', () => {
     }
   })
 
+  it('evaluates once per session across repeated flushes', async () => {
+    root = await mkdtemp(join(tmpdir(), 'dsh-track-a-dedupe-'))
+    if (root === undefined) throw new Error('tmp root missing')
+    const home: string = root
+    const loaded = await setup(
+      home,
+      { evaluator: { enabled: true, provider: 'flash', model: 'flash-1', maxCallsPerDay: 10 } },
+      true,
+    )
+    const session = appendSubstantial(loaded, 'flushed')
+    await loaded.sessions.flush(session)
+    await loaded.sessions.flush(session)
+    await loaded.sessions.flush(session)
+    await settleSessionMeta()
+
+    const store = new MetaStore({ dbPath: join(home, 'meta', 'meta.db') })
+    try {
+      expect(store.countEvaluationsSince(0)).toBe(1)
+    } finally {
+      store.close()
+    }
+  })
+
+  it('provides a sessionMeta drain handle for one-shot hosts', async () => {
+    root = await mkdtemp(join(tmpdir(), 'dsh-track-a-handle-'))
+    if (root === undefined) throw new Error('tmp root missing')
+    const home: string = root
+    const loaded = await setup(home, {}, false)
+    const handle = loaded.get('sessionMeta') as { settle?: unknown } | undefined
+    expect(typeof handle?.settle).toBe('function')
+  })
+
   it('skips silently without an llm service', async () => {
     root = await mkdtemp(join(tmpdir(), 'dsh-track-a-nollm-'))
     if (root === undefined) throw new Error('tmp root missing')

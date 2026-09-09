@@ -134,6 +134,26 @@ describe('headless runner', () => {
     await test.ctx.fiber.dispose()
   })
 
+  it('drains an optional sessionMeta settle between flush and exit', async () => {
+    const test = await bench({
+      async afterPrompt(session, message) {
+        await Promise.resolve()
+        appendTurn(session, 1, message, 'drained answer', true)
+      },
+    })
+    const order: string[] = []
+    test.ctx.provide('sessionMeta', {
+      settle: async () => {
+        order.push('settle')
+      },
+    })
+    const result = await test.run()
+    expect(result.code).toBe(0)
+    expect(result.order).toEqual(['flush', 'exit'])
+    expect(order).toEqual(['settle'])
+    await test.ctx.fiber.dispose()
+  })
+
   it('waits for asynchronously appended events instead of racing Agent idleness', async () => {
     const test = await bench({
       afterPrompt: async (session, message) => {

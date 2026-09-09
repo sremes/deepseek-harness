@@ -147,9 +147,10 @@ export async function evaluateTrackASession(
     result = await runEvaluator(
       llm,
       config,
-      { projection, steering: redactedSteering, knownSignatures: listKnownSignatures(config.skillsDir) },
+      { sessionId: aggregate.sessionId, projection, steering: redactedSteering, knownSignatures: listKnownSignatures(config.skillsDir) },
     )
   } catch (error) {
+    console.error(`EVALUATOR_DEBUG ${String(error).slice(0, 500)}`)
     deps.store.recordEvaluation({ ts: now, sessionId: aggregate.sessionId, inputTokens: 0, outputTokens: 0, decision: 'llm-error', draftSlug: null })
     deps.log(`session-meta: evaluator failed for ${aggregate.sessionId}: ${String(error)}`)
     return { decision: 'llm-error', draftSlug: null }
