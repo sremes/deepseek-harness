@@ -9,7 +9,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { writeFileSync } from 'node:fs'
+import { readdirSync, writeFileSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
@@ -21,6 +21,7 @@ import { ToolCallId, createAssistantMessage, createToolResultMessage, createUser
 import type { AssistantMessage } from '@deepseek-ai/dsh-llm'
 import * as SessionMetaPlugin from '../src/index.ts'
 import { MetaStore } from '../src/store.ts'
+import { settleSessionMeta } from '../src/index.ts'
 
 const SURFACE = { surfaceOp: 'append' } as const
 
@@ -161,6 +162,43 @@ describe('session-meta event flow', () => {
       store.close()
     }
   })
+})
+
+describe('Track B live wire', () => {
+  it('emits a runnable spec from a finalized parser crash and ledgers its run', async () => {
+    root = await mkdtemp(join(tmpdir(), 'dsh-session-meta-trackb-'))
+    if (root === undefined) throw new Error('tmp root missing')
+    const home: string = root
+    const loaded = await setup(home)
+    const crashed = loaded.sessions.create(SessionId('crashed'))
+    crashed.append('turn/start', { turn: 1 })
+    crashed.append('tool/call', { turn: 1, step: 1, callId: ToolCallId('k1'), name: 'read', arguments: '{"a":}' })
+    crashed.append(
+      'tool/result',
+      {
+        turn: 1,
+        step: 1,
+        message: createToolResultMessage({ callId: ToolCallId('k1'), content: [{ type: 'text', text: 'bad' }], isError: true }),
+        error: { name: 'SyntaxError', code: 'E_PARSE' },
+      },
+      SURFACE,
+    )
+    crashed.append('turn/end', { turn: 1, reason: { kind: 'blocked' } })
+    await loaded.sessions.flush(crashed)
+    await settleSessionMeta()
+
+    const reproDir = join(home, '.dsh', 'reproductions')
+    const specs = readdirSync(reproDir).filter(file => file.endsWith('.spec.ts'))
+    expect(specs).toHaveLength(1)
+    const store = new MetaStore({ dbPath: join(home, 'meta', 'meta.db') })
+    try {
+      const rows = store.listTrackBRuns(join(reproDir, specs[0] as string))
+      expect(rows).toHaveLength(1)
+      expect(rows[0]?.exitCode).toBe(0)
+    } finally {
+      store.close()
+    }
+  }, 180_000)
 })
 
 describe('real Loader composition', () => {
