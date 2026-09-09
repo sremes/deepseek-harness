@@ -1,7 +1,7 @@
 /**
  * Structural replay seam for the SDK-backed L2/L3 driver (Plan-V1 §4.1 +
  * Q15). `ReplayOutcome`/`ReplayRunner` are owned by
- * `@deepseek-ai/dsh-session-meta`'s `replay.ts` and re-exported here as
+ * `@deepseek-ai/dsh-session-meta`'s `types.ts` and re-exported here as
  * type-only aliases, so this file declares no shape of its own for them.
  * This package still never imports `sdk-client`, `dsh-session`, or `dsh-llm`
  * at runtime — only `SessionEvent` as a type.
@@ -57,9 +57,10 @@ export interface ReplayRunFn {
 /**
  * Optional patch-writer hook: converts a candidate skill-overlay directory
  * into the `skillOverlay` value the delegate run function receives. Absent,
- * the overlay passes through unchanged; the real profile-patch mounting
- * (writing a `--patch` file that appends the overlay to the
- * `skill-filesystem` `customSkillDirs`) lands in the wiring slice.
+ * the overlay passes through unchanged. Pass
+ * `dir => generateSkillOverlayPatch(dir, patchFile)` (see `./patch.ts`) to
+ * mount the overlay through a generated `--patch` file appending it to the
+ * `skill-filesystem` `customSkillDirs`.
  */
 export interface SdkReplayRunnerOptions {
   /**

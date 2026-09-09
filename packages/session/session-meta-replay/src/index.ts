@@ -13,3 +13,4 @@
 export * from './types.ts'
 export * from './outcome.ts'
 export * from './runner.ts'
+export * from './patch.ts'

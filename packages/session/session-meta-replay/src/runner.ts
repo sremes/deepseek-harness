@@ -35,7 +35,9 @@ export class SdkReplayRunner implements ReplayRunner {
   /**
    * Resolve a candidate overlay directory to the value the delegate
    * receives: the writer's mapping when present, else the directory itself.
-   * The real profile-patch mounting lands in the wiring slice.
+   * Pass `dir => generateSkillOverlayPatch(dir, patchFile)` (see
+   * `./patch.ts`) as the writer to mount the overlay through a generated
+   * `--patch` file instead of passing the directory through.
    *
    * @param skillOverlay - candidate skill-overlay directory from the caller.
    * @returns the overlay value handed to the delegate run function.

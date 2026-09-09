@@ -40,7 +40,7 @@ const baseline = await runner.run(taskInput)
 | `run(input)` or `run(input, { sessionId })` | Baseline | The input plus the session id; no overlay key at all |
 | `run(input, { skillOverlay })` | Candidate | The input plus the overlay (mapped through `writePatch` when one is configured) |
 
-The optional `writePatch` hook converts a candidate overlay directory into the overlay value the delegate receives. Today the default passes the directory through unchanged: the real profile-patch mounting (a `--patch` file appending the overlay to the `skill-filesystem` `customSkillDirs`) lands in the wiring slice.
+The optional `writePatch` hook converts a candidate overlay directory into the overlay value the delegate receives. The default passes the directory through unchanged; `generateSkillOverlayPatch` (see `src/patch.ts`) renders a `--patch` file mounting the overlay as the `skill-filesystem` `customSkillDirs` instead.
 
 ### Outcome mapping
 
@@ -108,8 +108,8 @@ Independent: every replay runs on its own session with no shared prefix, so noth
 
 These limits define what the driver does not do yet. They are current package constraints, not a task backlog.
 
-- **The seam is duplicated locally** — `src/types.ts` mirrors `ReplayOutcome`/`ReplayRunner` from session-meta's internal `replay.ts` because that module is not exported from the package root; any drift between the two is a defect in this file until the wiring slice publishes or re-exports the canonical seam.
-- **The candidate overlay passes through unmounted** — without a `writePatch` hook the delegate receives the draft directory as-is, which a stock `DeepSeekHarness` ignores; real mounting (a generated `--patch` file appending the overlay to `skill-filesystem` `customSkillDirs`, with a per-arm harness behind the delegate) is the deferred wiring slice.
+- **The seam is re-exported, not duplicated** — `src/types.ts` type-only re-exports `ReplayOutcome`/`ReplayRunner` from session-meta's `types.ts` through the workspace package root (project reference, no runtime import); `seam.spec.ts` pins the single declaration site.
+- **The candidate overlay mounts through a generated patch file** — pass `dir => generateSkillOverlayPatch(dir, patchFile)` (see `src/patch.ts`) as the runner's `writePatch` hook and the delegate receives a `--patch` file setting the overlay as the `skill-filesystem` `customSkillDirs`; without the hook the draft directory passes through as-is, which a stock `DeepSeekHarness` ignores. A per-arm harness behind the delegate stays deferred.
 - **Nothing constructs or hands over the runner yet** — `EvaluationDeps.replayRunner` stays undefined in production, so L2/L3 keep their skip-and-promote behavior until the wiring slice owns construction (bundle composition or a context service), lifetime, and budget interplay.
 
 <a id="dev-note"></a>
