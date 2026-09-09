@@ -24,8 +24,11 @@ import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-command-feedback'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
-import type { MetaRoute, SessionAggregate } from './types.ts'
-import { errorNameOf, hasExplicitPersistRequest, hasRecoveredErrors, isSteeringMessage, newAggregate, observeAgentError, observeToolCall, observeToolResult, observeUserMessage, triage } from './triage.ts'
+import type { MetaRoute, ReplayRunner, SessionAggregate } from './types.ts'
+import {
+  errorNameOf, hasExplicitPersistRequest, hasRecoveredErrors, isSteeringMessage, newAggregate,
+  observeAgentError, observeToolCall, observeToolResult, observeUserMessage, triage,
+} from './triage.ts'
 import { isCompletedTurnEnd } from './projection.ts'
 import { applySessionSignals, sweepDecay } from './curator.ts'
 import { TRACKB_RUN_TIMEOUT_MS, recordTrackB, startReproRun } from './trackb.ts'
@@ -102,6 +105,27 @@ interface Tracker {
  * across that fork is unreliable, and production never settles.
  */
 const pendingEvaluations = new Set<Promise<unknown>>()
+
+/**
+ * Replay runner handed to the L2/L3 gates. Session-meta never constructs
+ * one (it must not import `sdk-client` or the replay adapter at runtime):
+ * the host composition owns construction — typically
+ * `new SdkReplayRunner(delegate)` from `@deepseek-ai/dsh-session-meta-replay`
+ * around an SDK run function — and registers it here at boot. Absent, L2/L3
+ * keep their skip-and-promote behavior.
+ */
+let activeReplayRunner: ReplayRunner | undefined = undefined
+
+/**
+ * Register (or clear) the replay runner the L2/L3 gates drive. Test and
+ * composition seam; production hosts call it once at boot, tests reset it
+ * after each case.
+ *
+ * @param runner - runner implementation, or undefined to restore skipping.
+ */
+export function setReplayRunner(runner: ReplayRunner | undefined): void {
+  activeReplayRunner = runner
+}
 
 /**
  * Await every queued Track A evaluation. Test and maintenance seam;
@@ -192,6 +216,7 @@ function queueEvaluation(tracker: Tracker, ctx: Context, aggregate: SessionAggre
       store: tracker.store,
       home: tracker.home,
       llm: optionalLlm(ctx),
+      replayRunner: activeReplayRunner,
       now: () => Date.now(),
       log: (message: string) => {
         ctx.logger.info(message)
@@ -346,7 +371,7 @@ function finalizeSession(tracker: Tracker, session: Session, ctx: Context): void
         pendingEvaluations.delete(run)
       })
     }
-    /* v8 ignore start -- curator calls are contained (removal never throws); a store failure here is unreachable without a broken registry. */
+    /* v8 ignore start -- curator calls are contained; a store failure needs a broken registry. */
   } catch (error) {
     ctx.logger.warn(`session-meta: lifecycle signals failed: ${String(error)}`)
   }

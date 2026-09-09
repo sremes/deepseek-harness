@@ -110,7 +110,7 @@ These limits define what the driver does not do yet. They are current package co
 
 - **The seam is re-exported, not duplicated** — `src/types.ts` type-only re-exports `ReplayOutcome`/`ReplayRunner` from session-meta's `types.ts` through the workspace package root (project reference, no runtime import); `seam.spec.ts` pins the single declaration site.
 - **The candidate overlay mounts through a generated patch file** — pass `dir => generateSkillOverlayPatch(dir, patchFile)` (see `src/patch.ts`) as the runner's `writePatch` hook and the delegate receives a `--patch` file setting the overlay as the `skill-filesystem` `customSkillDirs`; without the hook the draft directory passes through as-is, which a stock `DeepSeekHarness` ignores. A per-arm harness behind the delegate stays deferred.
-- **Nothing constructs or hands over the runner yet** — `EvaluationDeps.replayRunner` stays undefined in production, so L2/L3 keep their skip-and-promote behavior until the wiring slice owns construction (bundle composition or a context service), lifetime, and budget interplay.
+- **The runner arrives by registration** — the host composition owns construction (`new SdkReplayRunner(delegate)` around an SDK run function; `generateSkillOverlayPatch` for candidate mounting) and registers it once at boot via `setReplayRunner` from `@deepseek-ai/dsh-session-meta`; `replay-composition.spec.ts` proves the L2 pair flows through the registered runner end to end. Absent registration, L2/L3 keep their skip-and-promote behavior. A per-arm harness behind the delegate and the SDK-delegate factory stay operator-side (they need a live runtime and profile decision, not more code).
 
 <a id="dev-note"></a>
 ### Dev Note

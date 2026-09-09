@@ -126,7 +126,7 @@ versioned (`PRAGMA user_version = 3`); mismatches throw instead of migrating.
 <details>
 <summary>Developer section: module map</summary>
 
-- `src/index.ts` — function plugin (`name`/`inject`/`Config`/`apply`, no default export): firehose tap, flush/dispose finalizers, store lifetime.
+- `src/index.ts` — function plugin (`name`/`inject`/`Config`/`apply`, no default export): firehose tap, flush/dispose finalizers, store lifetime, plus `setReplayRunner` (host-registered L2/L3 replay runner; unset keeps skip-and-promote) and `settleSessionMeta` (test seam).
 - `src/triage.ts` — pure deterministic router over `SessionAggregate`; every branch unit-tested without cordis.
 - `src/projection.ts` — per-session state projection Σ (args, digests, recovery marks, consulted skills, outcome).
 - `src/evaluator.ts` — budget-capped Flash call over Σ; schema-validated proposals.

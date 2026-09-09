@@ -52,6 +52,7 @@
     "@deepseek-ai/dsh-home-paths": "workspace:^",
     "@deepseek-ai/dsh-llm": "workspace:^",
     "@deepseek-ai/dsh-session": "workspace:^",
+    "@deepseek-ai/dsh-session-meta-replay": "workspace:^",
     "@deepseek-ai/cordis": "workspace:^"
   }
 }
