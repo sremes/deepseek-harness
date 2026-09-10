@@ -39,7 +39,8 @@ import type { EvaluationConfig } from './orchestrate.ts'
 import { evaluateTrackASession, hasSteeringFile, shouldEvaluateTrackA } from './orchestrate.ts'
 
 export type * from './types.ts'
-export { drivePendingSteering, type SteeringDriveDeps, type SteeringDriveResult, type SteeringDriveSkip } from './driver.ts'
+import { drivePendingSteering, type SteeringDriveDeps, type SteeringDriveResult, type SteeringDriveSkip } from './driver.ts'
+export { drivePendingSteering, type SteeringDriveDeps, type SteeringDriveResult, type SteeringDriveSkip }
 
 /** Cordis plugin name. */
 export const name = 'session-meta'
@@ -62,6 +63,12 @@ export interface Config {
   skillsDir?: string
   /** Track A evaluator (M2): disabled unless explicitly enabled with a route. */
   evaluator?: EvaluatorInputConfig
+  /**
+   * Run one post-hoc steering drive on first finalize (background hosts
+   * only — Hermes cron over a headless profile, never interactive hosts).
+   * Defaults to false; shipped profiles stay drive-free.
+   */
+  driveOnBoot?: boolean
 }
 
 /** Raw evaluator knobs; validated fail-closed in `apply` (see `resolveEvaluation`). */
@@ -89,6 +96,7 @@ export const Config: z<Config> = z.object({
   maxEvidencePerSession: z.number().step(1).min(1).default(200),
   skillsDir: z.string().default(''),
   evaluator: z.any(),
+  driveOnBoot: z.boolean().default(false),
 })
 
 interface Tracker {
@@ -97,6 +105,8 @@ interface Tracker {
   readonly maxEvidence: number
   readonly home: string
   readonly evaluation: EvaluationConfig
+  readonly driveOnBoot: boolean
+  bootDriveDone: boolean
   /** Sessions with a queued or settled Track A evaluation: flush fires per batch, evaluation runs once. */
   readonly evaluatedSessions: Set<string>
 }
@@ -186,6 +196,34 @@ export function optionalLlm(ctx: Context): EvaluatorLlm | undefined {
   const llm = ctx.get('llm') as EvaluatorLlm | null | undefined
   if (llm === null || llm === undefined || typeof llm.stream !== 'function') return undefined
   return llm
+}
+
+/** Queue one background steering drive without blocking flush/dispose. */
+function queueBootDrive(tracker: Tracker, ctx: Context): void {
+  tracker.bootDriveDone = true
+  const run = drivePendingSteering(
+    tracker.home,
+    tracker.evaluation,
+    {
+      store: tracker.store,
+      llm: optionalLlm(ctx),
+      replayRunner: activeReplayRunner,
+      now: () => Date.now(),
+      log: (message: string) => {
+        ctx.logger.info(message)
+      },
+    },
+  ).then((result) => {
+    ctx.logger.info(
+      `session-meta: background steering drive: ${result.evaluated} evaluated, ${result.skipped.length} skipped${result.stoppedOnBudget ? ' (budget spent)' : ''}`,
+    )
+  }).catch((error: unknown) => {
+    ctx.logger.warn(`session-meta: background steering drive failed: ${String(error)}`)
+  })
+  pendingEvaluations.add(run)
+  void run.finally(() => {
+    pendingEvaluations.delete(run)
+  })
 }
 
 /** Queue one Track A evaluation without blocking flush/dispose. */
@@ -372,6 +410,11 @@ function finalizeSession(tracker: Tracker, session: Session, ctx: Context): void
   ) {
     queueEvaluation(tracker, ctx, aggregate)
   }
+  // Background hosts (driveOnBoot): one post-hoc steering drive on first
+  // finalize, drained through the same pending set one-shot hosts await.
+  if (tracker.driveOnBoot && !tracker.bootDriveDone) {
+    queueBootDrive(tracker, ctx)
+  }
 }
 
 /**
@@ -394,6 +437,8 @@ export function apply(ctx: Context, config: Config): void {
     home,
     evaluation: resolveEvaluation(config, home),
     evaluatedSessions: new Set(),
+    driveOnBoot: config.driveOnBoot === true,
+    bootDriveDone: false,
   }
   ctx.effect(() => () => {
     store.close()

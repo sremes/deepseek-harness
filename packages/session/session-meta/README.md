@@ -121,6 +121,11 @@ route gate but keeps the effort gate. Finalized aggregates persist in
 records move to `processed/`, transient states (no aggregate yet, LLM failure,
 spent budget) stay pending for the next drive.
 
+Set `session-meta.driveOnBoot: true` only on background hosts (the nightly
+cron headless profile): the first finalized session queues one drive through
+the shared settle drain one-shot hosts await. Shipped profiles and
+interactive hosts leave it `false` (default).
+
 <a id="understand-the-implementation"></a>
 ## Understand the implementation
 

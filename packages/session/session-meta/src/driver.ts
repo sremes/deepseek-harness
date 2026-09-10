@@ -23,11 +23,13 @@ import type { EvaluatorLlm } from './evaluator.ts'
 import { evaluateTrackASession, shouldEvaluateTrackA, type EvaluationConfig } from './orchestrate.ts'
 import { parseSteeringFile, processedSteeringDir } from './steering.ts'
 import type { MetaStore } from './store.ts'
+import type { ReplayRunner } from './types.ts'
 
 /** Runtime dependencies of one steering drive. */
 export interface SteeringDriveDeps {
   readonly store: MetaStore
   readonly llm: EvaluatorLlm | undefined
+  readonly replayRunner?: ReplayRunner | undefined
   readonly now: () => number
   readonly log: (message: string) => void
 }
@@ -136,7 +138,7 @@ export async function drivePendingSteering(
       continue
     }
     const outcome = await evaluateTrackASession(
-      { store: deps.store, home, llm: deps.llm, replayRunner: undefined, now: deps.now, log: deps.log },
+      { store: deps.store, home, llm: deps.llm, replayRunner: deps.replayRunner, now: deps.now, log: deps.log },
       config,
       aggregate,
     )

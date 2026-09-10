@@ -33,9 +33,11 @@ on a session where nothing happened teaches nothing.
 
 ## Deliberate non-goals
 
-- No trigger in this slice: the driver is exported but nothing calls it yet.
-  Next slice is a boot-hook plugin (background headless profile driven by
-  Hermes cron) holding the real LLM service.
+- ~~No trigger in this slice~~ Trigger landed the same night: `driveOnBoot`
+  plugin flag (default false) queues one drive on first finalize into the
+  shared settle drain; `dsh-meta-smoke/driver.patch.yml` + a nightly Hermes
+  cron run (`dsh-nightly-steering-drive`, 03:00) boots headless against the
+  dogfood store with it. Nothing else calls the driver.
 - No aggregate backfill for pre-v8 sessions: records without a cached
   aggregate stay pending with a `no-aggregate` skip rather than
   synthesizing state.
