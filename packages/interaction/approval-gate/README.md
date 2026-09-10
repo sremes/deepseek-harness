@@ -39,7 +39,7 @@ Mount the plugin where escalation asks need answers and no human is composed (he
 |---|---|
 | `dshHome` | Harness home holding the `meta` judge-budget file. Required; empty fails loud at load. |
 | `judgeUrl` | Chat-completions base URL. Default `https://api.deepinfra.com/v1/openai`. |
-| `judgeModel` | Judge model id on the wire. Default `deepseek-ai/DeepSeek-V4-Flash`. |
+| `judgeModel` | Judge model id on the wire. Default `deepseek-ai/DeepSeek-V4-Flash-0731`. |
 | `apiKeyEnv` | Environment variable NAME holding the judge bearer key. Resolved per request, never stored; default `DEEPINFRA_API_KEY`. Absent key degrades to `next()`. |
 | `timeoutMs` | Judge abort bound. Default 45000. |
 | `maxCallsPerDay` | Judge calls per UTC date. Default 50; spent budgets degrade to `next()`. |

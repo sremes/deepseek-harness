@@ -101,7 +101,7 @@ describe('resolveGateConfig', () => {
   it('resolves documented defaults', () => {
     expect(resolveGateConfig({ dshHome: '/h' })).toMatchObject({
       judgeUrl: 'https://api.deepinfra.com/v1/openai',
-      judgeModel: 'deepseek-ai/DeepSeek-V4-Flash',
+      judgeModel: 'deepseek-ai/DeepSeek-V4-Flash-0731',
       apiKeyEnv: 'DEEPINFRA_API_KEY',
       timeoutMs: 45000,
       maxCallsPerDay: 50,

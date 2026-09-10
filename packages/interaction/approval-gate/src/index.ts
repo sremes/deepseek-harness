@@ -57,7 +57,7 @@ export interface Config {
 export const Config: z<Config> = z.object({
   dshHome: z.string(),
   judgeUrl: z.string().default('https://api.deepinfra.com/v1/openai'),
-  judgeModel: z.string().default('deepseek-ai/DeepSeek-V4-Flash'),
+  judgeModel: z.string().default('deepseek-ai/DeepSeek-V4-Flash-0731'),
   apiKeyEnv: z.string().default('DEEPINFRA_API_KEY'),
   timeoutMs: z.number().step(1).min(1).default(45000),
   maxCallsPerDay: z.number().step(1).min(1).default(50),
@@ -94,7 +94,7 @@ export function resolveGateConfig(config: Config): GateConfig {
   return {
     dshHome,
     judgeUrl: config.judgeUrl ?? 'https://api.deepinfra.com/v1/openai',
-    judgeModel: config.judgeModel ?? 'deepseek-ai/DeepSeek-V4-Flash',
+    judgeModel: config.judgeModel ?? 'deepseek-ai/DeepSeek-V4-Flash-0731',
     apiKeyEnv,
     timeoutMs: config.timeoutMs ?? 45000,
     maxCallsPerDay: config.maxCallsPerDay ?? 50,
