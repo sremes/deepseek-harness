@@ -19,7 +19,8 @@ import {
   resultCallId,
   resultText,
 } from '../src/triage.ts'
-import { optionalLlm, resolveEvaluation, settleSessionMeta, shouldEvaluateTrackA } from '../src/index.ts'
+import { optionalLlm, resolveEvaluation, settleSessionMeta } from '../src/index.ts'
+import { shouldEvaluateTrackA } from '../src/orchestrate.ts'
 import type { SessionAggregate } from '../src/types.ts'
 import { makeAggregate } from './helpers.ts'
 

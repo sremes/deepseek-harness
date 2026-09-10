@@ -24,9 +24,9 @@ import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-command-feedback'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
-import type { MetaRoute, ReplayRunner, SessionAggregate } from './types.ts'
+import type { ReplayRunner, SessionAggregate } from './types.ts'
 import {
-  errorNameOf, hasExplicitPersistRequest, hasRecoveredErrors, isSteeringMessage, newAggregate,
+  errorNameOf, isSteeringMessage, newAggregate,
   observeAgentError, observeToolCall, observeToolResult, observeUserMessage, triage,
 } from './triage.ts'
 import { isCompletedTurnEnd } from './projection.ts'
@@ -36,9 +36,10 @@ import { redactString, redactValue } from './redact.ts'
 import { MetaStore } from './store.ts'
 import type { EvaluatorLlm } from './evaluator.ts'
 import type { EvaluationConfig } from './orchestrate.ts'
-import { evaluateTrackASession, hasSteeringFile } from './orchestrate.ts'
+import { evaluateTrackASession, hasSteeringFile, shouldEvaluateTrackA } from './orchestrate.ts'
 
 export type * from './types.ts'
+export { drivePendingSteering, type SteeringDriveDeps, type SteeringDriveResult, type SteeringDriveSkip } from './driver.ts'
 
 /** Cordis plugin name. */
 export const name = 'session-meta'
@@ -187,30 +188,6 @@ export function optionalLlm(ctx: Context): EvaluatorLlm | undefined {
   return llm
 }
 
-/**
- * Whether a finalized session should run the Track A evaluator. Pure:
- * unit-covered without a context. M2.2 effort gate: below `minEvalToolCalls`
- * with early-only steering and no recovery, the session is trivial (a typo
- * correction, not a learnable workflow) — except explicit persist requests,
- * which always evaluate.
- */
-export function shouldEvaluateTrackA(
-  route: MetaRoute,
-  enabled: boolean,
-  aggregate: SessionAggregate,
-  hasSteering: boolean,
-  effort: Pick<EvaluationConfig, 'minEvalToolCalls' | 'earlySteeringMessages'>,
-): boolean {
-  if (route !== 'track_a' || !enabled) return false
-  if (hasExplicitPersistRequest(aggregate.steeringTexts)) return true
-  const recovered = hasRecoveredErrors(aggregate)
-  if (!hasSteering && !recovered) return false
-  if (recovered) return true
-  const firstSteeringAt = aggregate.assistantMessagesAtFirstSteering ?? 0
-  const trivial = aggregate.toolCalls < effort.minEvalToolCalls && firstSteeringAt <= effort.earlySteeringMessages
-  return !trivial
-}
-
 /** Queue one Track A evaluation without blocking flush/dispose. */
 function queueEvaluation(tracker: Tracker, ctx: Context, aggregate: SessionAggregate): void {
   if (tracker.evaluatedSessions.has(aggregate.sessionId)) return
@@ -334,6 +311,10 @@ function finalizeSession(tracker: Tracker, session: Session, ctx: Context): void
   const scrubbed = redactString(aggregate.sessionId, {})
   ctx.logger.info(`session-meta: session ${scrubbed.text} -> ${verdict.route} (${verdict.reasons.join(', ')})`)
   try {
+    // v8 aggregate cache for the post-hoc steering driver (reads finalized
+    // state after exit). Inside the existing guard so a cache failure can
+    // never break the session pipeline.
+    tracker.store.writeAggregate(aggregate.sessionId, aggregate)
     applySessionSignals(
       tracker.store,
       tracker.evaluation.skillsDir,

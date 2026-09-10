@@ -3,7 +3,7 @@
  * §§3.4/4.1/4.2). Covers every branch of `recordPromotion`,
  * `recordLive`, `recordApplication`, `applyConfidenceDelta`, and `getSkill`, the
  * replay-run budget ledger, the promotions ledger, the Track B spec-runner
- * ledger, plus the v2 → v3, v3 → v4, v5 → v6, and v6 → v7 migrations.
+ * ledger, plus the v2 → v3, v3 → v4, v5 → v6, v6 → v7, and v7 → v8 migrations.
  */
 
 import { mkdtemp, rm } from 'node:fs/promises'
@@ -12,6 +12,7 @@ import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it } from 'vitest'
 import { META_SCHEMA_VERSION, MetaStore } from '../src/store.ts'
+import { makeAggregate } from './helpers.ts'
 
 let store: MetaStore | undefined
 
@@ -383,7 +384,7 @@ describe('trackb runs', () => {
     expect(db.listTrackBRuns('repro.spec.ts', -1)).toEqual([])
   })
 
-  it('migrates a v6 database forward and stamps v7', async () => {
+  it('migrates a v6 database forward and stamps the current version', async () => {
     let dir: string | undefined
     try {
       dir = await mkdtemp(join(tmpdir(), 'dsh-meta-v6-'))
@@ -412,6 +413,89 @@ describe('trackb runs', () => {
       ])
       db.recordPromotion('sig', 'slug')
       expect(db.getSkill('sig')).toMatchObject({ slug: 'slug', status: 'probation' })
+      db.close()
+      store = undefined
+      const raw = new DatabaseSync(path)
+      try {
+        const version = raw.prepare('PRAGMA user_version').get() as { user_version: number }
+        expect(version.user_version).toBe(META_SCHEMA_VERSION)
+      } finally {
+        raw.close()
+      }
+    } finally {
+      store?.close()
+      store = undefined
+      if (dir !== undefined) await rm(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('aggregate cache', () => {
+  it('round-trips a finalized aggregate with the pending-call map revived', () => {
+    const db = freshStore()
+    const aggregate = makeAggregate('sess-1')
+    aggregate.toolCalls = 4
+    aggregate.steeringTexts = ['stay on the task']
+    aggregate.pendingToolCalls.set('tool-1', 7)
+    db.writeAggregate('sess-1', aggregate)
+    expect(db.readAggregate('sess-1')).toEqual(aggregate)
+  })
+
+  it('lets the latest finalize win per session', () => {
+    const db = freshStore()
+    const first = makeAggregate('sess-1')
+    first.toolCalls = 1
+    const second = makeAggregate('sess-1')
+    second.toolCalls = 9
+    db.writeAggregate('sess-1', first)
+    db.writeAggregate('sess-1', second)
+    expect(db.readAggregate('sess-1')).toEqual(second)
+  })
+
+  it('yields undefined for sessions with no cached aggregate', () => {
+    expect(freshStore().readAggregate('sess-missing')).toBeUndefined()
+  })
+
+  it('yields undefined for a corrupt cache row instead of throwing', async () => {
+    let dir: string | undefined
+    try {
+      dir = await mkdtemp(join(tmpdir(), 'dsh-meta-corrupt-'))
+      const path = join(dir, 'meta.db')
+      const raw = new DatabaseSync(path)
+      raw.exec('CREATE TABLE meta_aggregates(session_id TEXT PRIMARY KEY, aggregate TEXT NOT NULL);')
+      raw.prepare("INSERT INTO meta_aggregates(session_id, aggregate) VALUES('sess-1', 'not-json{{{')").run()
+      raw.close()
+      // Fresh database (version 0): open stamps forward and creates the
+      // missing tables around the seeded corrupt row.
+      store = new MetaStore({ dbPath: path })
+      expect(store.readAggregate('sess-1')).toBeUndefined()
+    } finally {
+      store?.close()
+      store = undefined
+      if (dir !== undefined) await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('migrates a v7 database forward and serves the aggregate cache', async () => {
+    let dir: string | undefined
+    try {
+      dir = await mkdtemp(join(tmpdir(), 'dsh-meta-v7-'))
+      const path = join(dir, 'meta.db')
+      const legacy = new DatabaseSync(path)
+      // Skeletal v7 database: the migration only adds meta_aggregates, so the
+      // fixture needs the version stamp plus one real table for fidelity.
+      legacy.exec(
+        'CREATE TABLE meta_sessions(id TEXT PRIMARY KEY);'
+        + 'CREATE TABLE trackb_runs(ts INTEGER NOT NULL, file TEXT NOT NULL, exit_code INTEGER NOT NULL);'
+        + 'PRAGMA user_version = 7;',
+      )
+      legacy.close()
+      store = new MetaStore({ dbPath: path })
+      const db = store
+      const aggregate = makeAggregate('sess-1')
+      aggregate.toolCalls = 3
+      db.writeAggregate('sess-1', aggregate)
+      expect(db.readAggregate('sess-1')).toEqual(aggregate)
       db.close()
       store = undefined
       const raw = new DatabaseSync(path)

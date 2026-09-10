@@ -113,6 +113,14 @@ evaluate. Knobs: `evaluator.minEvalToolCalls` (default 3),
 `evaluator.earlySteeringMessages` (default 1). Passing drafts promote to live
 immediately under a weekly blast cap (`evaluator.maxPromotionsPerWeek`, default 3).
 
+Records written after their session exited are not lost: `drivePendingSteering`
+(post-hoc driver) runs pending `meta/steering/*.json` files through the same
+gates and the same `evaluateTrackASession` — the explicit file bypasses the
+route gate but keeps the effort gate. Finalized aggregates persist in
+`meta_aggregates` (schema v8) so the driver reads post-exit state; consumed
+records move to `processed/`, transient states (no aggregate yet, LLM failure,
+spent budget) stay pending for the next drive.
+
 <a id="understand-the-implementation"></a>
 ## Understand the implementation
 
@@ -121,7 +129,8 @@ Synchronous handlers only aggregate and buffer. SQLite writes happen on
 canonical session log is never rewritten — redaction applies to the meta
 copy only (PEM blocks, known token prefixes, `key=value` secrets, `cwd` →
 `$CWD`, home → `~`, per-string/array/depth bounds). On-disk schema is
-versioned (`PRAGMA user_version = 3`); mismatches throw instead of migrating.
+versioned (`PRAGMA user_version = 8`); older versions migrate forward, anything
+else throws instead of migrating.
 
 <details>
 <summary>Developer section: module map</summary>
@@ -132,7 +141,8 @@ versioned (`PRAGMA user_version = 3`); mismatches throw instead of migrating.
 - `src/evaluator.ts` — budget-capped Flash call over Σ; schema-validated proposals.
 - `src/judge.ts` — M3 L4-lite blinded order-swapped pairwise judge; harm veto only, fails closed.
 - `src/replay.ts` — M3 L2/L3 replay-driver seam: outcome data, runner interface, scripted fake, harm veto, judge summary.
-- `src/orchestrate.ts` — offline loop driver (budget, steering files, L0/L1 gates, L2 motivating-task replay gate, L3 regression-sample gate, gated drafts).
+- `src/orchestrate.ts` — offline loop driver (budget, steering files, effort gate, L0/L1 gates, L2 motivating-task replay gate, L3 regression-sample gate, gated drafts).
+- `src/driver.ts` — post-hoc steering driver (`drivePendingSteering`): pending records through the same pipeline after session exit.
 - `src/steering.ts` — headless correction-record ingest.
 - `src/writer.ts` — gated `SKILL.md` drafts (`disable-model-invocation`, `whenToUse`).
 - `src/l0.ts` — M3 L0 contract gate: deterministic veto over a rendered draft (frontmatter, metadata, sections, mechanizable bans); the orchestrator ledgers `l0-rejected` without writing.

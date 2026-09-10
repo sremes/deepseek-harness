@@ -13,6 +13,7 @@
     "packages/session/session-meta-replay/README.md",
     "packages/interaction/approval-gate/README.md",
     ".agents/notes/implemented/feature/2026-09-09-approval-gate-llm-answerer.md",
-    ".agents/notes/implemented/feature/2026-09-09-learning-loop-liveness.md"
+    ".agents/notes/implemented/feature/2026-09-09-learning-loop-liveness.md",
+    ".agents/notes/implemented/feature/2026-09-10-posthoc-steering-driver.md"
   ]
 }

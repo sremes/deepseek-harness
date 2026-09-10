@@ -15,10 +15,10 @@ import { evaluateL0 } from './l0.ts'
 import { evaluateL1 } from './l1.ts'
 import { projectSession as buildProjection } from './projection.ts'
 import { redactString } from './redact.ts'
-import type { ReplayOutcome, ReplayRunner } from './types.ts'
+import type { MetaRoute, ReplayOutcome, ReplayRunner } from './types.ts'
 import { buildReplaySummary, compareForHarm } from './replay.ts'
 import { parseSteeringFile, processedSteeringDir, steeringFilePath } from './steering.ts'
-import { hasRecoveredErrors } from './triage.ts'
+import { hasExplicitPersistRequest, hasRecoveredErrors } from './triage.ts'
 import type { MetaStore } from './store.ts'
 import type { EvaluatorProposal, SessionAggregate, SteeringRecord } from './types.ts'
 import { renderDraft, slugify, writeSkillDraft, promoteDraftFile } from './writer.ts'
@@ -63,6 +63,31 @@ export function startOfUtcDay(now: number): number {
   const day = new Date(now)
   day.setUTCHours(0, 0, 0, 0)
   return day.getTime()
+}
+
+/**
+ * Whether a finalized session should run the Track A evaluator. Pure:
+ * unit-covered without a context. M2.2 effort gate: below `minEvalToolCalls`
+ * with early-only steering and no recovery, the session is trivial (a typo
+ * correction, not a learnable workflow) — except explicit persist requests,
+ * which always evaluate. Owned here (not index.ts) so the post-hoc steering
+ * driver reuses the exact live gate.
+ */
+export function shouldEvaluateTrackA(
+  route: MetaRoute,
+  enabled: boolean,
+  aggregate: SessionAggregate,
+  hasSteering: boolean,
+  effort: Pick<EvaluationConfig, 'minEvalToolCalls' | 'earlySteeringMessages'>,
+): boolean {
+  if (route !== 'track_a' || !enabled) return false
+  if (hasExplicitPersistRequest(aggregate.steeringTexts)) return true
+  const recovered = hasRecoveredErrors(aggregate)
+  if (!hasSteering && !recovered) return false
+  if (recovered) return true
+  const firstSteeringAt = aggregate.assistantMessagesAtFirstSteering ?? 0
+  const trivial = aggregate.toolCalls < effort.minEvalToolCalls && firstSteeringAt <= effort.earlySteeringMessages
+  return !trivial
 }
 
 /**

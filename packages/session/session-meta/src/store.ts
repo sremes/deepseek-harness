@@ -6,8 +6,9 @@
  * Schema v1 holds sessions + evidence. Schema v2 adds the evaluator budget
  * ledger; schema v3 adds the skill registry; schema v4 adds the replay-run
  * budget ledger; schema v5 adds the skill-sessions history; schema v6 adds
- * the promotions ledger; schema v7 adds the Track B spec-runner ledger.
- * v1/v2/v3/v4/v5/v6
+ * the promotions ledger; schema v7 adds the Track B spec-runner ledger;
+ * schema v8 persists per-session aggregates for the post-hoc steering driver.
+ * v1/v2/v3/v4/v5/v6/v7
  * databases migrate forward automatically (new tables only — no row
  * rewrites). Anything else throws instead of migrating (repo stance).
  *
@@ -17,10 +18,10 @@
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import type { EvaluatorLedgerRow, MetaRoute, MetaSessionRow, SkillRegistryRow, SkillStatus, TrackBRunRow } from './types.ts'
+import type { EvaluatorLedgerRow, MetaRoute, MetaSessionRow, SessionAggregate, SkillRegistryRow, SkillStatus, TrackBRunRow } from './types.ts'
 
-/** On-disk schema version; v1/v2/v3/v4/v5/v6 migrate to v7, anything else throws. */
-export const META_SCHEMA_VERSION = 7
+/** On-disk schema version; v1/v2/v3/v4/v5/v6/v7 migrate to v8, anything else throws. */
+export const META_SCHEMA_VERSION = 8
 
 /** Pipeline-promoted skills start here (probation — one regression archives). */
 export const SKILL_PROBATION_CONFIDENCE = 0.4
@@ -96,6 +97,10 @@ CREATE TABLE IF NOT EXISTS trackb_runs(
   file TEXT NOT NULL,
   exit_code INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS meta_aggregates(
+  session_id TEXT PRIMARY KEY,
+  aggregate TEXT NOT NULL
+);
 `
 
 /** Narrow write model: one finished session plus its evidence rows. */
@@ -131,9 +136,9 @@ export class MetaStore {
     const version = this.db.prepare('PRAGMA user_version').get() as { user_version: number }
     if (version.user_version === 0) {
       this.db.exec(`PRAGMA user_version = ${META_SCHEMA_VERSION}`)
-    } else if (version.user_version === 1 || version.user_version === 2 || version.user_version === 3 || version.user_version === 4 || version.user_version === 5 || version.user_version === 6) {
-      // v1/v2/v3/v4/v5/v6 → v7 are additive only (evaluator_ledger, skill_registry,
-      // replay_runs, skill_sessions, promotions, trackb_runs, created above): stamp forward.
+    } else if (version.user_version >= 1 && version.user_version <= 7) {
+      // v1/v2/v3/v4/v5/v6/v7 → v8 are additive only (evaluator_ledger, skill_registry,
+      // replay_runs, skill_sessions, promotions, trackb_runs, meta_aggregates, created above): stamp forward.
       this.db.exec(`PRAGMA user_version = ${META_SCHEMA_VERSION}`)
     } else if (version.user_version !== META_SCHEMA_VERSION) {
       const seen = version.user_version
@@ -233,6 +238,19 @@ export class MetaStore {
   countEvaluationsSince(sinceTs: number): number {
     const row = this.db.prepare('SELECT COUNT(*) AS n FROM evaluator_ledger WHERE ts >= ?').get(sinceTs) as { n: number }
     return row.n
+  }
+
+  /**
+   * Whether a session already has any evaluator ledger row. The post-hoc
+   * steering driver uses this as its cross-process evaluated set (the live
+   * path's in-memory set does not survive process exit).
+   *
+   * @param sessionId - session to look up.
+   * @returns true when at least one ledger row names the session.
+   */
+  hasEvaluation(sessionId: string): boolean {
+    const row = this.db.prepare('SELECT 1 AS one FROM evaluator_ledger WHERE session_id = ? LIMIT 1').get(sessionId) as { one: number } | undefined
+    return row !== undefined
   }
 
   /**
@@ -441,6 +459,42 @@ export class MetaStore {
       'SELECT ts, file, exit_code FROM trackb_runs WHERE file = ? ORDER BY ts DESC LIMIT ?',
     ).all(file, limit) as Array<{ ts: number; file: string; exit_code: number }>
     return rows.map(row => ({ ts: row.ts, file: row.file, exitCode: row.exit_code }))
+  }
+
+  /**
+   * Persist one finalized aggregate for the post-hoc steering driver. The
+   * `pendingToolCalls` map serializes as entries; latest write per session
+   * wins (finalize fires per batch, the last state is the complete one).
+   *
+   * @param sessionId - Owning session id (row key).
+   * @param aggregate - Live aggregate at finalize time.
+   * @returns No return value; one row is upserted.
+   */
+  writeAggregate(sessionId: string, aggregate: SessionAggregate): void {
+    const { pendingToolCalls, ...rest } = aggregate
+    const stored = JSON.stringify({ ...rest, pendingToolCalls: [...pendingToolCalls.entries()] })
+    this.db.prepare('INSERT INTO meta_aggregates(session_id, aggregate) VALUES(?, ?) ON CONFLICT(session_id) DO UPDATE SET aggregate = excluded.aggregate').run(sessionId, stored)
+  }
+
+  /**
+   * Read one persisted aggregate, reviving the pending-call map. Missing or
+   * corrupt rows yield `undefined` (the driver skips them with a log line) —
+   * a broken cache row must never fail the session pipeline.
+   *
+   * @param sessionId - Owning session id.
+   * @returns the revived aggregate, or undefined when absent or unparseable.
+   */
+  readAggregate(sessionId: string): SessionAggregate | undefined {
+    const row = this.db.prepare(
+      'SELECT aggregate FROM meta_aggregates WHERE session_id = ?',
+    ).get(sessionId) as { aggregate: string } | undefined
+    if (row === undefined) return undefined
+    try {
+      const parsed = JSON.parse(row.aggregate) as Omit<SessionAggregate, 'pendingToolCalls'> & { pendingToolCalls: Array<[string, number]> }
+      return { ...parsed, pendingToolCalls: new Map(parsed.pendingToolCalls) }
+    } catch {
+      return undefined
+    }
   }
 
   close(): void {
