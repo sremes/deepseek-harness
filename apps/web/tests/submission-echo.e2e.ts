@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// Local submission echo over the BUILT client graph (keyless fixture Connection RPC
+// Local submission echo over the BUILT client graph (keyless RemoteMock
 // transport): a text-plus-image send paints its echo bubble synchronously on
 // the submit keystroke — before serialization, transport, or the fixture's
 // durable admission — with the composer already cleared and editable, and the
@@ -8,23 +8,13 @@
 // path here is the production correlation, not a test hook.
 import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { expect, it } from 'vitest'
-import { installAssembledBootEnv, mountAssembledApp } from './assembled-boot.ts'
+import { createAssembledSessionComposer, installAssembledBootEnv, mountAssembledApp } from './assembled-boot.ts'
 
 installAssembledBootEnv()
 
 it('paints the submission echo on the send keystroke and swaps it for the durable node', async () => {
-  mountAssembledApp()
-
-  const tree = await screen.findByRole('tree', { name: 'Sessions' }, { timeout: 10_000 })
-  const start = tree.querySelector<HTMLButtonElement>('button[aria-label="New session in fixture"]')
-  if (start === null) throw new Error('fixture Workspace new-session action missing')
-  fireEvent.click(start)
-
-  const composer = await waitFor(() => {
-    const surface = document.querySelector<HTMLElement>('[data-composer-input]')
-    if (surface === null) throw new Error('composer surface missing')
-    return surface
-  }, { timeout: 10_000 })
+  const remote = mountAssembledApp()
+  const composer = await createAssembledSessionComposer(remote)
   const image = new File([new Uint8Array([137, 80, 78, 71])], 'echoed.png', { type: 'image/png' })
   fireEvent.paste(composer, {
     clipboardData: {
@@ -33,7 +23,7 @@ it('paints the submission echo on the send keystroke and swaps it for the durabl
     },
   })
   await waitFor(() => {
-    if (document.querySelector('[role="group"][aria-label="Pending images"] img') === null) {
+    if (document.querySelector('[role="group"][aria-label="Pending attachments"] img') === null) {
       throw new Error('attachment rail missing')
     }
   }, { timeout: 5_000 })
@@ -53,7 +43,7 @@ it('paints the submission echo on the send keystroke and swaps it for the durabl
   expect(echo.querySelector('img')?.getAttribute('src')?.split(':')[0]).toBe('blob')
   expect(composer.textContent).toBe('')
   expect(composer.getAttribute('contenteditable')).toBe('true')
-  expect(document.querySelector('[role="group"][aria-label="Pending images"]')).toBeNull()
+  expect(document.querySelector('[role="group"][aria-label="Pending attachments"]')).toBeNull()
 
   // The fixture's durable user/message (source.rpcId echoes the prompt
   // requestId) replaces the echo: one bubble, no marker left, and the image

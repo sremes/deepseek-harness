@@ -9,7 +9,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-`dsh-session-title` gives every session a title clients can display: a deterministic fallback from the first eligible human message, an optional asynchronous provider (such as a model-backed one), or an explicit user rename. Every accepted revision is a log-only `session/title` event, so titles survive replay, resume, and paging exactly like any other session event and never enter the model surface. The service owns scheduling and acceptance; the optional provider owns generation. Automatic work never delays the main agent response, and a newer revision supersedes older work. Configuration and title sources come first; the implementation internals live in a collapsible developer section below.
+Use `dsh-session-title` to give each session a client-visible title from the first eligible human message, an optional asynchronous generator, or an explicit user rename. Accepted titles persist through replay, resume, and paging but never enter model input. Automatic generation never delays the main agent response, and newer title requests supersede older work. Choose the package when clients need durable titles with configurable length limits and a deliberate `refresh()` path for regenerating them.
 
 ## Table of Contents
 
@@ -54,7 +54,7 @@ The generated [configuration catalog](../../../docs/config-catalog.md#deepseek-a
 
 ### Adding a provider
 
-One optional asynchronous provider may be registered through `ctx.sessionTitle.register(provider)`; a second registration throws. The shipped model-backed providers are [first-prompt](../session-title-first-prompt-llm/README.md) and [all-prompts](../session-title-all-prompts-llm/README.md), both using the shared [LLM generation policy](../session-title-llm/README.md). A provider starts only after a marked loop-built request's exact route matches the logged `request/header`, and a newer revision supersedes and aborts older work.
+One optional asynchronous provider may be registered through `ctx.sessionTitle.register(provider)`; a second registration throws until the first provider's disposal starts, so a replacement can activate while the previous provider drains, and the previous provider's late results never commit. The shipped model-backed providers are [first-prompt](../session-title-first-prompt-llm/README.md) and [all-prompts](../../experimental/session-title-all-prompts-llm/README.md), both using the shared [LLM execution module](../session-title-llm/README.md). Immediately before each call the service captures the latest accepted title snapshot, including the fallback it just ensured, and passes it as `request.currentTitle`; the provider owns whether and how to use it. A provider starts only after a marked loop-built request's exact route matches the logged `request/header`, and a newer revision supersedes and aborts older work. For unchanged routes, an active marked request starts pending automatic generation without a new header event; accepted human messages may follow the current `step/start`.
 
 ### Reading titles
 
@@ -104,9 +104,9 @@ Accepted titles are cleaned of terminal control sequences, directional and invis
 Read these pages when the service contract is not enough. They move from the subsystem reference to the model-backed providers that plug in here.
 
 - [Session title subsystem](../../../docs/subsystems/session-title.md) — durable title state and the provider vocabulary types.
-- [Shared LLM title policy](../session-title-llm/README.md) — the model-backed generation helper both shipped providers use.
+- [Shared LLM execution module](../session-title-llm/README.md) — the model-backed execution module both shipped providers use.
 - [First-message title provider](../session-title-first-prompt-llm/README.md) — titles from the first eligible human message.
-- [All-messages title provider](../session-title-all-prompts-llm/README.md) — titles from every eligible human message.
+- [All-messages title provider](../../experimental/session-title-all-prompts-llm/README.md) — titles from every eligible human message.
 - [Session package map](../README.md) — adjacent persistence, projection, title, and telemetry packages.
 
 -----

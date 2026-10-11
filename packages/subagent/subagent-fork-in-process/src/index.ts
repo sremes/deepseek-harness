@@ -14,11 +14,9 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import type {
   ContinuableCreateRequest,
   ContinuableCreateSpec,
-  ResolvedSubagentStartRequest,
   SubagentCapabilities,
   SubagentProvider,
 } from '@deepseek-ai/dsh-subagent'
-import { startInProcessRun } from '@deepseek-ai/dsh-subagent-in-process-driver'
 
 export const name = 'subagent-fork-in-process'
 // `tools` is deliberately NOT injected — same rationale as subagent-spawn-in-process: the
@@ -46,6 +44,7 @@ export const Config: z<Config> = z.object({
  * @returns the seed events, contiguous from seq 0; empty when no turn has completed.
  */
 function completedTurnPrefix(parent: Agent): SessionEvent[] {
+  // oxlint-disable-next-line typescript/no-deprecated -- Existing Session history read; migration deferred.
   const events = parent.session.snapshotEvents()
   const lastEnd = events.findLast(e => e.type === 'turn/end')
   if (lastEnd === undefined) return []
@@ -71,15 +70,6 @@ class ForkInProcessProvider implements SubagentProvider {
   readonly inheritsParentContext = true
 
   constructor(readonly name: string) {}
-
-  start(request: ResolvedSubagentStartRequest) {
-    const seed = completedTurnPrefix(request.parent)
-    return startInProcessRun(request, {
-      // Only pass a seed when there's a completed turn to inherit; an empty seed
-      // is equivalent to a fresh child, so omit it to keep the session unseeded.
-      ...seed.length > 0 ? { seed } : {},
-    })
-  }
 
   prepareContinuable(request: ContinuableCreateRequest): Promise<ContinuableCreateSpec> {
     // The fork prefix is captured ONCE, at creation: it becomes part of the

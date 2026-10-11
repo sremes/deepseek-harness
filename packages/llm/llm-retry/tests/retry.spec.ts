@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, expectTypeOf, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import type { Fiber } from '@deepseek-ai/cordis'
-import LlmRuntime, { createUserMessage, ToolCallId, EMPTY_RESPONSE_CODE, LlmAdapter, LlmError, resolveRetryPolicy  } from '@deepseek-ai/dsh-llm'
+import LlmRuntime, { createUserMessage, ToolCallId, EMPTY_RESPONSE_CODE, LlmAdapter, LlmError, expandAssistantStream, resolveRetryPolicy  } from '@deepseek-ai/dsh-llm'
 import type {
   AlwaysRetryPolicyConfig,
   BackoffConfig,
@@ -174,6 +174,30 @@ afterEach(async () => {
   context = undefined
 })
 
+describe('retry projection', () => {
+  it('keeps the same state when a recorded retry is applied again', async () => {
+    type Definition = { key: string; apply(state: object, event: SessionEvent): object }
+    const definitions: Definition[] = []
+    const { ctx } = await harness(new ScriptedAdapter([]), undefined, (inner) => {
+      const projections = inner.sessionProjections
+      const register = projections.register.bind(projections)
+      projections.register = (spec: Definition) => {
+        definitions.push(spec)
+        return register(spec as never)
+      }
+    })
+    const definition = definitions.find(spec => spec.key === 'llmRetry')!
+    const event: SessionEvent = {
+      type: 'llm/retry',
+      data: { provider: 'mock', policyKey: 'policy', retry: 1, retryId: 'retry-1' },
+    } as never
+    const state = definition.apply({}, event)
+
+    expect(definition.apply(state, event)).toBe(state)
+    await ctx.fiber.dispose()
+  })
+})
+
 describe('provider-routed retry policy', () => {
   it('records the scheduled delay before retrying the request', async () => {
     vi.useFakeTimers()
@@ -287,20 +311,19 @@ describe('provider-routed retry policy', () => {
     await idle
 
     const retryEvent = agent.session.snapshotEvents().find(event => event.type === 'llm/retry')
-    const failedChunks = agent.session.snapshotEvents().filter(event =>
-      event.type === 'assistant/chunk'
+    const failedAttempts = agent.session.snapshotEvents().filter((event): event is SessionEvent<'assistant/attempt'> =>
+      event.type === 'assistant/attempt'
       && retryEvent !== undefined
       && event.seq < retryEvent.seq,
     )
-    expect(failedChunks).toHaveLength(7)
+    expect(failedAttempts).toHaveLength(1)
+    expect(expandAssistantStream(failedAttempts[0]!.data.stream)).toHaveLength(7)
     const assistantMessages = agent.session.snapshotEvents().filter(event => event.type === 'assistant/message')
     expect(assistantMessages.map(event => ({
       turn: event.data.turn,
       step: event.data.step,
     }))).toEqual([{ turn: 1, step: 1 }])
-    expect(failedChunks.every(event =>
-      !assistantMessages[0]?.sourceEventSeqs?.includes(event.seq),
-    )).toBe(true)
+    expect(assistantMessages[0]?.sourceEventSeqs).toBeUndefined()
     expect(agent.session.snapshotEvents().some(event => event.type === 'tool/call')).toBe(false)
     expect(toolExecutions).toBe(0)
     expect(agent.session.deriveMessages().at(-1)).toMatchObject({

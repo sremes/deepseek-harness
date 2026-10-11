@@ -9,6 +9,7 @@
  * fake-service suite (tools.spec.ts) carries the coverage gate.
  */
 
+import { provideWorkingDirectoryFixture } from '@deepseek-ai/dsh-agent-loop-testkit'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, rm, utimes, writeFile } from 'node:fs/promises'
@@ -61,6 +62,8 @@ describe('search tools over the real subprocess service + the packaged rg', () =
     await utimes(join(dir, 'src', 'beta.ts'), new Date(2020, 0, 1), new Date(2020, 0, 1))
 
     ctx = new Context()
+
+    provideWorkingDirectoryFixture(ctx)
     await ctx.plugin(SystemPrompt)
     await ctx.plugin(ToolRuntime)
     await ctx.plugin(LocalSubprocessRuntime)
@@ -189,12 +192,13 @@ describe('search tools over the real subprocess service + the packaged rg', () =
       expect(result.error).toMatchObject({ info: { name: 'AbortError', code: TOOL_ABORTED_BEFORE_DISPATCH } })
     })
 
-    it('an unusable session cwd (spawn failure) is SEARCH_FAILED', async () => {
+    it('an unusable session cwd provider rejection is SEARCH_FAILED', async () => {
       const gone = join(dir, 'deleted-session-dir')
       const result = await call('glob', { pattern: '*' }, { session: { header: { id: 'session-int', cwd: gone } } })
       expect(result.isError).toBe(true)
       expect(result.error).toMatchObject({ info: { name: 'SearchError', code: 'SEARCH_FAILED' } })
-      expect(text(result)).toContain('could not start')
+      expect(text(result)).toContain('subprocess failed before reporting an outcome')
+      expect(text(result)).not.toContain('could not start')
     })
   })
 })
