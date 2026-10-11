@@ -44,12 +44,11 @@ afterEach(async () => {
 async function freshHome(): Promise<string> {
   root = await mkdtemp(join(tmpdir(), 'dsh-driver-'))
   if (root === undefined) throw new Error('tmp root missing')
-  const home: string = root
   store = new MetaStore({ dbPath: ':memory:' })
-  return home
+  return root
 }
 
-function deps(home: string, llm: EvaluatorLlm | undefined, logs: string[]) {
+function deps(_home: string, llm: EvaluatorLlm | undefined, logs: string[]) {
   if (store === undefined) throw new Error('store missing')
   return { store, llm, now: () => Date.UTC(2026, 8, 4, 12, 0, 0), log: (message: string) => { logs.push(message) } }
 }

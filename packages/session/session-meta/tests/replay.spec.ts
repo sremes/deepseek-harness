@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { FakeReplayRunner, buildReplaySummary, compareForHarm } from '../src/replay.ts'
-import type { ReplayOutcome } from '../src/replay.ts'
+import type { ReplayOutcome } from '../src/types.ts'
 
 function outcomeFor(overrides: Partial<ReplayOutcome>): ReplayOutcome {
   return {

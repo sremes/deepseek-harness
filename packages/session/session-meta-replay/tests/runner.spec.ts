@@ -26,6 +26,7 @@ function humanUser(seq: number, text: string): SessionEvent {
     type: 'user/message',
     seq: SessionSeq(seq),
     time: seq,
+    surfaceOp: 'append',
     data: {
       id: MessageId(`user-${String(seq)}`),
       role: 'user',

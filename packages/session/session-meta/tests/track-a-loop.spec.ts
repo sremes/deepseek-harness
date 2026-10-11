@@ -60,7 +60,7 @@ async function setup(home: string, config: Record<string, unknown>, withLlm: boo
 function appendSteered(loaded: Context, id: string) {
   const session = loaded.sessions.create(SessionId(id))
   session.append('turn/start', { turn: 1 })
-  session.append('assistant/message', { turn: 1, step: 1, message: assistantText('first try') }, SURFACE)
+  session.append('assistant/message', { turn: 1, step: 1, message: assistantText('first try'), stream: [] }, SURFACE)
   session.append(
     'user/message',
     createUserMessage({ content: [{ type: 'text', text: 'no, confirm first' }], source: { kind: 'user' } }),
@@ -74,7 +74,7 @@ function appendSteered(loaded: Context, id: string) {
 function appendSubstantial(loaded: Context, id: string) {
   const session = loaded.sessions.create(SessionId(id))
   session.append('turn/start', { turn: 1 })
-  session.append('assistant/message', { turn: 1, step: 1, message: assistantText('first try') }, SURFACE)
+  session.append('assistant/message', { turn: 1, step: 1, message: assistantText('first try'), stream: [] }, SURFACE)
   for (let step = 1; step <= 3; step += 1) {
     const callId = ToolCallId(`read-${step}`)
     session.append('tool/call', { turn: 1, step, callId, name: 'read', arguments: '{"path":"/tmp/f"}' })
@@ -101,7 +101,7 @@ function appendSubstantial(loaded: Context, id: string) {
 function appendFlailThenSucceed(loaded: Context, id: string) {
   const session = loaded.sessions.create(SessionId(id))
   session.append('turn/start', { turn: 1 })
-  session.append('assistant/message', { turn: 1, step: 1, message: assistantText('trying') }, SURFACE)
+  session.append('assistant/message', { turn: 1, step: 1, message: assistantText('trying'), stream: [] }, SURFACE)
   session.append('tool/call', { turn: 1, step: 1, callId: ToolCallId('f1'), name: 'edit', arguments: '{"force":false}' })
   session.append(
     'tool/result',

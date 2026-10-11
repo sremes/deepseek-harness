@@ -94,7 +94,7 @@ function appendTaskedSteered(loaded: Context, id: string) {
     createUserMessage({ content: [{ type: 'text', text: 'Confirm the destructive path before running it' }], source: { kind: 'user' } }),
     SURFACE,
   )
-  session.append('assistant/message', { turn: 1, step: 1, message: assistantText('first try') }, SURFACE)
+  session.append('assistant/message', { turn: 1, step: 1, message: assistantText('first try'), stream: [] }, SURFACE)
   for (let step = 1; step <= 3; step += 1) {
     const callId = ToolCallId(`read-${step}`)
     session.append('tool/call', { turn: 1, step, callId, name: 'read', arguments: '{"path":"/tmp/f"}' })

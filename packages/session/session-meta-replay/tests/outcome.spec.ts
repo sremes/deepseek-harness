@@ -5,9 +5,15 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import { MessageId, ToolCallId } from '@deepseek-ai/dsh-llm'
+import { MessageId, ToolCallId, type AssistantStreamRecord } from '@deepseek-ai/dsh-llm'
 import { SessionSeq, type SessionEvent, type TurnEndReason } from '@deepseek-ai/dsh-session'
 import { REPLAY_SUMMARY_MAX_CHARS, mapRunResultToOutcome } from '../src/index.ts'
+
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    plugin: { kind: 'plugin'; plugin: string }
+  }
+}
 
 /** One `turn/start` boundary event: shapes nothing, exercises the open-union fallthrough. */
 function turnStart(seq: number): SessionEvent {
@@ -25,6 +31,7 @@ function humanUser(seq: number, text: string): SessionEvent {
     type: 'user/message',
     seq: SessionSeq(seq),
     time: seq,
+    surfaceOp: 'append',
     data: {
       id: MessageId(`user-${String(seq)}`),
       role: 'user',
@@ -40,6 +47,7 @@ function pluginUser(seq: number, text: string): SessionEvent {
     type: 'user/message',
     seq: SessionSeq(seq),
     time: seq,
+    surfaceOp: 'append',
     data: {
       id: MessageId(`plugin-${String(seq)}`),
       role: 'user',
@@ -55,6 +63,7 @@ function assistant(seq: number, text: string): SessionEvent {
     type: 'assistant/message',
     seq: SessionSeq(seq),
     time: seq,
+    surfaceOp: 'append',
     data: {
       turn: 0,
       step: 0,
@@ -64,6 +73,7 @@ function assistant(seq: number, text: string): SessionEvent {
         content: [{ type: 'text', text }],
         source: { kind: 'model', provider: 'test', model: 'test' },
       },
+      stream: [] as AssistantStreamRecord[],
     },
   }
 }

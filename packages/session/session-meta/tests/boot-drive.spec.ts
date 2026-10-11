@@ -79,14 +79,14 @@ async function boot(home: string, driveOnBoot: boolean): Promise<Context> {
 }
 
 /** One minimal live session to trigger first-finalize. */
-function flushLive(loaded: Context, id: string): Promise<void> {
+async function flushLive(loaded: Context, id: string): Promise<void> {
   const session = loaded.sessions.create(SessionId(id))
   session.append(
     'user/message',
     createUserMessage({ content: [{ type: 'text', text: 'Boot probe' }], source: { kind: 'user' } }),
     SURFACE,
   )
-  return loaded.sessions.flush(session)
+  await loaded.sessions.flush(session)
 }
 
 function readStore(home: string): MetaStore {

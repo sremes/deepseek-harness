@@ -67,7 +67,7 @@ describe('session-meta event flow', () => {
       SURFACE,
     )
     clean.append('turn/start', { turn: 1 })
-    clean.append('assistant/message', { turn: 1, step: 1, message: assistantText('done') }, SURFACE)
+    clean.append('assistant/message', { turn: 1, step: 1, message: assistantText('done'), stream: [] }, SURFACE)
     clean.append('tool/call', { turn: 1, step: 1, callId: ToolCallId('c1'), name: 'read', arguments: '{}' })
     clean.append(
       'tool/result',
@@ -89,7 +89,7 @@ describe('session-meta event flow', () => {
     // Steered session: human correction after the assistant spoke -> track_a.
     const steered = loaded.sessions.create(SessionId('steered'))
     steered.append('turn/start', { turn: 1 })
-    steered.append('assistant/message', { turn: 1, step: 1, message: assistantText('first try') }, SURFACE)
+    steered.append('assistant/message', { turn: 1, step: 1, message: assistantText('first try'), stream: [] }, SURFACE)
     steered.append(
       'user/message',
       createUserMessage({

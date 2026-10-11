@@ -16,7 +16,7 @@ import {
 import { steeringFilePath } from '../src/steering.ts'
 import { MetaStore } from '../src/store.ts'
 import { FakeReplayRunner } from '../src/replay.ts'
-import type { ReplayOutcome, ReplayRunner } from '../src/replay.ts'
+import type { ReplayOutcome, ReplayRunner } from '../src/types.ts'
 import { makeAggregate, textChunks, VALID_PROPOSAL_JSON } from './helpers.ts'
 
 const CONFIG: EvaluationConfig = {

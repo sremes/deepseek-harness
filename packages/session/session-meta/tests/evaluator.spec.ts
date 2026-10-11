@@ -9,11 +9,11 @@ const ROUTE = { provider: 'flash', model: 'flash-1', maxInputBytes: 12000, maxOu
 
 function fakeLlm(chunks: readonly StreamChunk[], seen?: { provider?: string; model?: string; sessionId?: string }): EvaluatorLlm {
   return {
-    async *stream(options: { provider: string; model: string; sessionId?: string }): AsyncIterable<StreamChunk> {
+    async *stream(options: Parameters<EvaluatorLlm['stream']>[0]): AsyncIterable<StreamChunk> {
       if (seen !== undefined) {
         seen.provider = options.provider
         seen.model = options.model
-        seen.sessionId = options.sessionId
+        if (options.sessionId !== undefined) seen.sessionId = options.sessionId
       }
       yield* chunks
     },
@@ -49,7 +49,7 @@ describe('buildEvaluatorPrompt', () => {
     aggregate.skillsConsulted.push('triage')
     aggregate.turnEndReason = JSON.stringify({ kind: 'completed' })
     const prompt = JSON.parse(
-      buildEvaluatorPrompt({ projection: projectSession(aggregate), steering: [], knownSignatures: ['old-draft'] }),
+      buildEvaluatorPrompt({ sessionId: 's1', projection: projectSession(aggregate), steering: [], knownSignatures: ['old-draft'] }),
     ) as Record<string, unknown>
     expect(prompt.completed).toBe(true)
     expect(prompt.skills_consulted).toEqual(['triage'])
