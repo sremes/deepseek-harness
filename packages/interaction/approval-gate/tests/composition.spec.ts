@@ -63,7 +63,10 @@ function verdictBody(verdict: unknown, grounds: unknown): unknown {
 
 /** Announce one tool call on the firehose so the gate can recover it. */
 async function announce(ctx: Context, callId: string, command: string): Promise<void> {
-  await ctx.emit('session/event', {}, { type: 'tool/call', data: { callId, name: 'bash', arguments: JSON.stringify({ command }) } })
+  await ctx.emit('session/event', {} as never, {
+    type: 'tool/call',
+    data: { callId, name: 'bash', arguments: JSON.stringify({ command }) },
+  } as never)
 }
 
 let root: string | undefined
@@ -145,11 +148,11 @@ describe('gate plugin wiring', () => {
   it('ignores firehose shapes that carry no call identity', async () => {
     const home = await freshHome()
     const loaded = await mounted(home)
-    await loaded.emit('session/event', {}, { type: 'user/message', data: {} })
-    await loaded.emit('session/event', {}, { type: 'tool/call', data: 'not-an-object' })
-    await loaded.emit('session/event', {}, { type: 'tool/call', data: {} })
-    await loaded.emit('session/event', {}, { type: 'tool/call', data: { callId: 7, name: 'bash' } })
-    await loaded.emit('session/event', {}, { type: 'tool/call', data: { callId: '', name: 'bash' } })
+    await loaded.emit('session/event', {} as never, { type: 'user/message', data: {} } as never)
+    await loaded.emit('session/event', {} as never, { type: 'tool/call', data: 'not-an-object' } as never)
+    await loaded.emit('session/event', {} as never, { type: 'tool/call', data: {} } as never)
+    await loaded.emit('session/event', {} as never, { type: 'tool/call', data: { callId: 7, name: 'bash' } } as never)
+    await loaded.emit('session/event', {} as never, { type: 'tool/call', data: { callId: '', name: 'bash' } } as never)
     await announce(loaded, 'c-kept', 'echo hi')
     const { agent } = fakeAgent()
     await expect(
