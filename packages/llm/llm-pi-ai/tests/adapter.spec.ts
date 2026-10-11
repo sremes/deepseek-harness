@@ -128,7 +128,7 @@ describe('PiAiAdapter provider routing', () => {
     const server = await mockServer([{ events: textEvents }])
     const ctx = await harness(server.url, { sessionIdHeader: 'x-opencode-session' })
     await assemble(ctx, {
-      model: 'deepseek-v4-flash',
+      model: 'deepseek-flash',
       messages: [],
       sessionId: 'session-for-affinity' as never,
     })
@@ -138,14 +138,14 @@ describe('PiAiAdapter provider routing', () => {
   it('omits the session header without configuration or without a session id', async () => {
     const noConfig = await mockServer([{ events: textEvents }])
     await assemble(await harness(noConfig.url), {
-      model: 'deepseek-v4-flash',
+      model: 'deepseek-flash',
       messages: [],
       sessionId: 'session-nowhere-to-go' as never,
     })
     expect(noConfig.headers[0]).not.toHaveProperty('x-opencode-session')
     const noSession = await mockServer([{ events: textEvents }])
     await assemble(await harness(noSession.url, { sessionIdHeader: 'x-opencode-session' }), {
-      model: 'deepseek-v4-flash',
+      model: 'deepseek-flash',
       messages: [],
     })
     expect(noSession.headers[0]).not.toHaveProperty('x-opencode-session')
@@ -155,7 +155,7 @@ describe('PiAiAdapter provider routing', () => {
     const server = await mockServer([{ events: textEvents }])
     const ctx = await harness(server.url, { sessionIdHeader: 'User-Agent' })
     await assemble(ctx, {
-      model: 'deepseek-v4-flash',
+      model: 'deepseek-flash',
       messages: [],
       sessionId: 'session-collision' as never,
     })

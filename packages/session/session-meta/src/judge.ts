@@ -12,6 +12,7 @@
 import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { Message } from '@deepseek-ai/dsh-llm'
 import type { EvaluatorLlm, EvaluatorRoute } from './evaluator.ts'
+import { sessionMetaSource } from './evaluator.ts'
 
 /** Blinded pairwise verdict: which presented approach the judge preferred. */
 export type JudgeVerdict = 'prefer-a' | 'prefer-b' | 'tie'
@@ -100,7 +101,7 @@ async function runOneJudge(
     if (Buffer.byteLength(prompt, 'utf8') > route.maxInputBytes) return undefined
     const messages: Message[] = [createUserMessage({
       content: [{ type: 'text', text: prompt }],
-      source: { kind: 'plugin', plugin: 'dsh-session-meta' },
+      source: sessionMetaSource(),
     })]
     const deadline = AbortSignal.timeout(route.timeoutMs)
     const assembler = new BlockAssembler()

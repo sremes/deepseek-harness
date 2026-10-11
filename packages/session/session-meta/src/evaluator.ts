@@ -12,6 +12,17 @@ import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { Message, StreamChunk } from '@deepseek-ai/dsh-llm'
 import type { EvaluatorProposal, SessionProjection, SteeringRecord } from './types.ts'
 
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    'session-meta': { kind: 'session-meta'; plugin: string }
+  }
+}
+
+/** Attribution for evaluator/judge prompt messages authored by this plugin. */
+export function sessionMetaSource(): { kind: 'session-meta'; plugin: string } {
+  return { kind: 'session-meta', plugin: 'dsh-session-meta' }
+}
+
 /** Minimal structural surface of the `llm` service used by the evaluator. */
 export interface EvaluatorLlm {
   stream(options: {
@@ -163,7 +174,7 @@ export async function runEvaluator(
   }
   const messages: Message[] = [createUserMessage({
     content: [{ type: 'text', text: prompt }],
-    source: { kind: 'plugin', plugin: 'dsh-session-meta' },
+    source: sessionMetaSource(),
   })]
   const deadline = AbortSignal.timeout(route.timeoutMs)
   const combined = signal === undefined ? deadline : AbortSignal.any([signal, deadline])
