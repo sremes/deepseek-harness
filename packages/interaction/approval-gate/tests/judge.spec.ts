@@ -19,8 +19,18 @@ const OPTIONS = {
   url: 'https://judge.test/v1/openai',
   model: 'test-flash',
   apiKey: 'test-key',
+  api: 'openai-completions',
   timeoutMs: 1000,
-}
+} as const
+
+const RESPOND_OPTIONS = {
+  url: 'https://judge.test/zen/go/v1',
+  model: 'test-spark',
+  apiKey: 'test-key',
+  api: 'openai-responses',
+  headers: { 'x-opencode-session': 'test-session' },
+  timeoutMs: 1000,
+} as const
 
 /** Fetch stub serving one canned response (or throwing). */
 function stubFetch(handler: () => unknown): JudgeFetch {
@@ -112,5 +122,67 @@ describe('judgeCommand', () => {
     await expect(
       judgeCommand(INPUT, { ...OPTIONS, timeoutMs: 20, fetchFn: hanging }),
     ).resolves.toBeUndefined()
+  })
+})
+
+/** Canned Responses-API verdict body (reasoning item plus message item). */
+function respondBody(verdict: unknown, grounds: unknown): unknown {
+  return {
+    status: 'completed',
+    output: [
+      { type: 'reasoning', status: 'completed' },
+      {
+        type: 'message',
+        content: [{ type: 'output_text', text: JSON.stringify({ verdict, grounds }) }],
+      },
+    ],
+  }
+}
+
+describe('judgeCommand over openai-responses', () => {
+  it('posts to /responses and parses message output-text', async () => {
+    let seenUrl = ''
+    let seenInit: { headers?: Record<string, string>; body?: string } = {}
+    const verdict = await judgeCommand(INPUT, {
+      ...RESPOND_OPTIONS,
+      fetchFn: (async (url: string, init: { headers: Record<string, string>; body: string }) => {
+        seenUrl = url
+        seenInit = init
+        return { ok: true, status: 200, json: async () => respondBody('allow', 'benign echo') }
+      }) as JudgeFetch,
+    })
+    expect(verdict).toEqual({ verdict: 'allow', grounds: 'benign echo' })
+    expect(seenUrl).toBe('https://judge.test/zen/go/v1/responses')
+    expect(seenInit.headers?.['Authorization']).toBe('Bearer test-key')
+    expect(seenInit.headers?.['x-opencode-session']).toBe('test-session')
+    const body = JSON.parse(seenInit.body ?? '{}') as { model?: unknown; instructions?: unknown; input?: unknown; reasoning?: unknown }
+    expect(body).toMatchObject({ model: 'test-spark', reasoning: { effort: 'low' } })
+    expect(typeof body.instructions).toBe('string')
+    expect(typeof body.input).toBe('string')
+  })
+
+  it('degrades reasoning-only, missing, and malformed outputs', async () => {
+    for (const envelope of [
+      { status: 'incomplete', output: [{ type: 'reasoning', status: 'incomplete' }] },
+      { status: 'completed', output: [] },
+      { status: 'completed', output: [{ type: 'message', content: [] }] },
+      {
+        status: 'completed',
+        output: [{ type: 'message', content: [{ type: 'output_text', text: 'not json' }] }],
+      },
+      {
+        status: 'completed',
+        output: [{ type: 'message', content: [{ type: 'output_text', text: '{"verdict":"maybe","grounds":"x"}' }] }],
+      },
+      { status: 'completed' },
+      'just a string',
+    ]) {
+      const shaped: JudgeFetch = (async () => ({
+        ok: true,
+        status: 200,
+        json: async () => envelope,
+      })) as JudgeFetch
+      await expect(judgeCommand(INPUT, { ...RESPOND_OPTIONS, fetchFn: shaped })).resolves.toBeUndefined()
+    }
   })
 })

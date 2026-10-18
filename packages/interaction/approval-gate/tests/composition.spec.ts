@@ -58,7 +58,13 @@ function stubJudge(body: unknown, status = 200): void {
 }
 
 function verdictBody(verdict: unknown, grounds: unknown): unknown {
-  return { choices: [{ message: { content: JSON.stringify({ verdict, grounds }) } }] }
+  return {
+    status: 'completed',
+    output: [
+      { type: 'reasoning', status: 'completed' },
+      { type: 'message', content: [{ type: 'output_text', text: JSON.stringify({ verdict, grounds }) }] },
+    ],
+  }
 }
 
 /** Announce one tool call on the firehose so the gate can recover it. */
@@ -103,9 +109,11 @@ describe('resolveGateConfig', () => {
 
   it('resolves documented defaults', () => {
     expect(resolveGateConfig({ dshHome: '/h' })).toMatchObject({
-      judgeUrl: 'https://api.deepinfra.com/v1/openai',
-      judgeModel: 'deepseek-ai/DeepSeek-V4-Flash-0731',
-      apiKeyEnv: 'DEEPINFRA_API_KEY',
+      judgeUrl: 'https://opencode.ai/zen/go/v1',
+      judgeModel: 'muse-spark-1.3-contributor',
+      api: 'openai-responses',
+      sessionHeader: 'valjas-approval-gate',
+      apiKeyEnv: 'OPENCODE_GO_API_KEY',
       timeoutMs: 45000,
       maxCallsPerDay: 50,
     })

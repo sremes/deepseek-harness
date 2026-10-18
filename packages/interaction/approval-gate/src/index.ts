@@ -42,12 +42,16 @@ export const MAX_JUDGE_COMMAND_CHARS = 2000
 
 /** Plugin configuration: home plus the judge route and budgets. No secrets here. */
 export interface Config {
-  /** Harness home holding the `meta` budget file. Required; fails loud when empty. */
+  /** Harness home holding the `meta` ledger and budget files. Required; fails loud when empty. */
   dshHome: string
-  /** Chat-completions base URL for the judge. */
+  /** Judge base URL (no trailing path). */
   judgeUrl?: string
   /** Judge model id on the wire. */
   judgeModel?: string
+  /** Wire protocol: completions for chat-style endpoints, responses for the Go route. */
+  api?: 'openai-completions' | 'openai-responses'
+  /** Value sent as `x-opencode-session` on the responses protocol (routing hint). */
+  sessionHeader?: string
   /** Environment variable NAME holding the judge bearer key (resolved per request, never stored). */
   apiKeyEnv?: string
   /** Judge abort bound in millis. */
@@ -58,21 +62,27 @@ export interface Config {
 
 export const Config: z<Config> = z.object({
   dshHome: z.string(),
-  judgeUrl: z.string().default('https://api.deepinfra.com/v1/openai'),
-  judgeModel: z.string().default('deepseek-ai/DeepSeek-V4-Flash-0731'),
-  apiKeyEnv: z.string().default('DEEPINFRA_API_KEY'),
+  judgeUrl: z.string().default('https://opencode.ai/zen/go/v1'),
+  judgeModel: z.string().default('muse-spark-1.3-contributor'),
+  api: z.union(['openai-completions', 'openai-responses'] as const).default('openai-responses'),
+  sessionHeader: z.string().default('valjas-approval-gate'),
+  apiKeyEnv: z.string().default('OPENCODE_GO_API_KEY'),
   timeoutMs: z.number().step(1).min(1).default(45000),
   maxCallsPerDay: z.number().step(1).min(1).default(50),
 })
 
 /** Resolved gate settings (from plugin config). */
 export interface GateConfig {
-  /** Harness home holding the `meta` budget file. */
+  /** Harness home holding the `meta` ledger and budget files. */
   readonly dshHome: string
-  /** Chat-completions base URL for the judge. */
+  /** Judge base URL (no trailing path). */
   readonly judgeUrl: string
   /** Judge model id on the wire. */
   readonly judgeModel: string
+  /** Wire protocol the judge speaks. */
+  readonly api: 'openai-completions' | 'openai-responses'
+  /** Value sent as `x-opencode-session` on the responses protocol. */
+  readonly sessionHeader: string
   /** Environment variable NAME holding the judge bearer key. */
   readonly apiKeyEnv: string
   /** Judge abort bound in millis. */
@@ -90,13 +100,19 @@ export interface GateConfig {
  */
 export function resolveGateConfig(config: Config): GateConfig {
   const dshHome = config.dshHome ?? ''
-  if (dshHome === '') throw new Error('approval-gate: config.dshHome is required (budget file home)')
-  const apiKeyEnv = config.apiKeyEnv ?? 'DEEPINFRA_API_KEY'
+  if (dshHome === '') throw new Error('approval-gate: config.dshHome is required (ledger and budget file home)')
+  const apiKeyEnv = config.apiKeyEnv ?? 'OPENCODE_GO_API_KEY'
   if (apiKeyEnv === '') throw new Error('approval-gate: config.apiKeyEnv must name the key variable')
+  const api = config.api ?? 'openai-responses'
+  if (api !== 'openai-completions' && api !== 'openai-responses') {
+    throw new Error('approval-gate: config.api must be openai-completions or openai-responses')
+  }
   return {
     dshHome,
-    judgeUrl: config.judgeUrl ?? 'https://api.deepinfra.com/v1/openai',
-    judgeModel: config.judgeModel ?? 'deepseek-ai/DeepSeek-V4-Flash-0731',
+    judgeUrl: config.judgeUrl ?? 'https://opencode.ai/zen/go/v1',
+    judgeModel: config.judgeModel ?? 'muse-spark-1.3-contributor',
+    api,
+    sessionHeader: config.sessionHeader ?? 'valjas-approval-gate',
     apiKeyEnv,
     timeoutMs: config.timeoutMs ?? 45000,
     maxCallsPerDay: config.maxCallsPerDay ?? 50,
@@ -195,7 +211,14 @@ export function apply(ctx: Context, config: Config): void {
       const started = Date.now()
       const verdict = await judgeCommand(
         { command: command.slice(0, MAX_JUDGE_COMMAND_CHARS), cwd, requestedMode: mode, justification: req.reason ?? '' },
-        { url: resolved.judgeUrl, model: resolved.judgeModel, apiKey, timeoutMs: resolved.timeoutMs },
+        {
+          url: resolved.judgeUrl,
+          model: resolved.judgeModel,
+          apiKey,
+          api: resolved.api,
+          headers: resolved.api === 'openai-responses' ? { 'x-opencode-session': resolved.sessionHeader } : undefined,
+          timeoutMs: resolved.timeoutMs,
+        },
       )
       const latencyMs = Date.now() - started
       if (verdict === undefined) return delegate(next, 'judge-fault')

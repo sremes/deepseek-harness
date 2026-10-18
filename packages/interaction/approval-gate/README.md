@@ -30,7 +30,7 @@ Mount the plugin where escalation asks need answers and no human is composed (he
 - name: '@deepseek-ai/dsh-approval-gate'
   config:
     dshHome: !!js process.env.DSH_HOME
-    apiKeyEnv: DEEPINFRA_API_KEY
+    apiKeyEnv: OPENCODE_GO_API_KEY
 ```
 
 ### Config
@@ -38,9 +38,11 @@ Mount the plugin where escalation asks need answers and no human is composed (he
 | Field | Meaning |
 |---|---|
 | `dshHome` | Harness home holding the `meta` judge-budget file. Required; empty fails loud at load. |
-| `judgeUrl` | Chat-completions base URL. Default `https://api.deepinfra.com/v1/openai`. |
-| `judgeModel` | Judge model id on the wire. Default `deepseek-ai/DeepSeek-V4-Flash-0731`. |
-| `apiKeyEnv` | Environment variable NAME holding the judge bearer key. Resolved per request, never stored; default `DEEPINFRA_API_KEY`. Absent key degrades to `next()`. |
+| `judgeUrl` | Judge base URL. Default `https://opencode.ai/zen/go/v1`. |
+| `judgeModel` | Judge model id on the wire. Default `muse-spark-1.3-contributor`. |
+| `api` | Wire protocol: `openai-responses` (Go route) or `openai-completions` (chat-style endpoints). Default `openai-responses`. |
+| `sessionHeader` | Value sent as `x-opencode-session` on the responses protocol (the Go route refuses requests without it). Default `valjas-approval-gate`. |
+| `apiKeyEnv` | Environment variable NAME holding the judge bearer key. Resolved per request, never stored; default `OPENCODE_GO_API_KEY`. Absent key degrades to `next()`. |
 | `timeoutMs` | Judge abort bound. Default 45000. |
 | `maxCallsPerDay` | Judge calls per UTC date. Default 50; spent budgets degrade to `next()`. |
 
@@ -48,7 +50,7 @@ Mount the plugin where escalation asks need answers and no human is composed (he
 
 1. **Blacklist** (`src/gate.ts`): exact-deny patterns (`rm -rf /`, `mkfs`, `dd … of=/dev/`, fork bombs, `curl|wget … | sh`, device redirects, `chmod -R 777 /`, power commands) → `rejected`.
 2. **Allowlist**: whole-command anchored allow for the boring-read-only class (`ls`, `cat`, `echo`, `pwd`, read-only `git` porch) with every shell metacharacter banned → `allowed-once`. Anything piped, redirected, chained, or substituted falls through by construction.
-3. **Judge** (`src/judge.ts`): one fixed-shape chat call over the command plus cwd, target mode, and justification — never a transcript. Schema-clean allow/reject only; every fault degrades to `next()`.
+3. **Judge** (`src/judge.ts`): one fixed-shape call over the command plus cwd, target mode, and justification — never a transcript. Speaks `openai-responses` (Go route, `reasoning.effort: low`) or `openai-completions`. Schema-clean allow/reject only; every fault degrades to `next()`.
 
 ### Outcome contract (every ask ends in exactly one of these)
 
@@ -94,7 +96,7 @@ The ask payload carries no command — only the model's justification — so the
 
 - `src/index.ts` — function plugin (`name`/`inject`/`Config`/`apply`, no default export): firehose tap, waterfall answerer, fail-closed config resolution.
 - `src/gate.ts` — pure deterministic layers (blacklist, allowlist, command recovery); unit-tested without cordis.
-- `src/judge.ts` — bounded verdict call over an injectable fetch; every fault degrades to `undefined`.
+- `src/judge.ts` — bounded verdict call over an injectable fetch, both wire protocols; every fault degrades to `undefined`.
 - `src/budget.ts` — daily counter file under `$DSH_HOME/meta`; corrupt files reset, spent budgets refuse without writing.
 - `src/ledger.ts` — append-only decision ledger under `$DSH_HOME/meta/approver-decisions.jsonl`; command shapes only, never raw text; never throws.
 - `src/types.ts` — types only.
