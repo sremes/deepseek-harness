@@ -82,7 +82,7 @@ SELECT route, COUNT(*) FROM meta_sessions GROUP BY route;
 | Route | Trigger |
 |---|---|
 | `track_b` | Structural error (`SyntaxError`, `JSONParseError`, `ZodError`, `ERR_REGEX_TIMEOUT`, `ERR_TOOL_SCHEMA_VIOLATION`), any `agent/error`, any *unrecovered* tool error, or a non-`completed` turn end. |
-| `track_a` | Human steering (a `user`-kind `user/message` after the first assistant message), or proven recovery: every failed step has a later succeeding same-tool step on a `completed` turn (`success-recovered`, with or without steering). |
+| `track_a` | Human steering (a `user`-kind `user/message` after the first assistant message), proven recovery: every failed step has a later succeeding same-tool step on a `completed` turn (`success-recovered`, with or without steering), or an approval-outcome signal (see below). |
 | `no_op` | Neither signal. |
 
 Result call ids are read from top-level `callId`, `message.callId`, `message.source.callId`, or content-block `toolCallId` (live `dsh-tool-result` shape); error names without step evidence still count, but never prove recovery.
@@ -91,6 +91,25 @@ Sessions whose every tool error is environment-class (`SandboxUnavailableError`,
 
 Inbox events whose message source is not human (`agent-message` relays, tool
 frames, plugin notices) are never steering.
+
+### Approval-outcome signals (Valjas loop-close)
+
+At finalize, the plugin joins the session's observed tool-call ids against
+the approval-gate decision ledger (`$DSH_HOME/meta/approver-decisions.jsonl`,
+exact `callId` match, session-window only). Divergences become triage
+reasons and upgrade a signal-less session to `track_a` — structural routes
+keep their verdict and gain the reason:
+
+| Signal | Meaning | Reason |
+|---|---|---|
+| `override-allow` | Gate rejected, human allowed | `approval-override-allow:<bin>` — criteria too strict; strongest correction |
+| `override-deny` | Gate allowed, human rejected | `approval-override-deny:<bin>` — gate too permissive |
+| `uncertain-allowed` / `uncertain-confirmed` | Jev unsure, human decided | `approval-uncertain-*:<bin>` — calibration data for `escalateBelow` |
+
+A missing or unreadable ledger yields no signals. Lapses (nobody decided)
+are never session-attached — friction data, not correction. The
+blacklist/allowlist stay hand-owned: signals may tune Jev criteria and
+thresholds, never the deterministic layers.
 
 ### Track A evaluator input (M2.1)
 

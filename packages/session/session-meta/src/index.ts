@@ -17,6 +17,7 @@
  */
 
 import { dirname, join } from 'node:path'
+import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
@@ -31,6 +32,7 @@ import {
 } from './triage.ts'
 import { isCompletedTurnEnd } from './projection.ts'
 import { applySessionSignals, sweepDecay } from './curator.ts'
+import { approvalReasonsForSession, summarizeApprovalSignals } from './approval-signals.ts'
 import { TRACKB_RUN_TIMEOUT_MS, recordTrackB, startReproRun } from './trackb.ts'
 import { redactString, redactValue } from './redact.ts'
 import { MetaStore } from './store.ts'
@@ -325,6 +327,25 @@ function observeEvent(tracker: Tracker, session: Session, event: SessionEvent): 
 function finalizeSession(tracker: Tracker, session: Session, ctx: Context): void {
   const aggregate = ensureAggregate(tracker, session)
   const verdict = triage(aggregate)
+  // Approval-outcome signals: exact callId join against the gate ledger.
+  // Override/uncertain signals upgrade a signal-less session to Track A;
+  // structural routes keep their verdict and gain the reason. A missing or
+  // unreadable ledger yields no signals — measurement, never load-bearing.
+  let route = verdict.route
+  const reasons = [...verdict.reasons]
+  try {
+    const ledger = readFileSync(join(tracker.home, 'meta', 'approver-decisions.jsonl'), 'utf8')
+    const extra = approvalReasonsForSession(
+      aggregate.pendingToolCalls,
+      summarizeApprovalSignals(ledger.split('\n'), aggregate.startedAt),
+    )
+    if (extra.length > 0) {
+      reasons.push(...extra)
+      if (route === 'no_op') route = 'track_a'
+    }
+  } catch {
+    // No ledger, no signals.
+  }
   const endedAt = Date.now()
   tracker.store.writeSession({
     id: aggregate.sessionId,
@@ -341,13 +362,13 @@ function finalizeSession(tracker: Tracker, session: Session, ctx: Context): void
     feedbackEvents: aggregate.feedbackEvents,
     assistantMessages: aggregate.assistantMessages,
     turnEndReason: aggregate.turnEndReason ?? null,
-    route: verdict.route,
-    reasons: verdict.reasons,
+    route,
+    reasons,
     droppedEvidence: aggregate.droppedEvidence,
     evidence: aggregate.evidence,
   })
   const scrubbed = redactString(aggregate.sessionId, {})
-  ctx.logger.info(`session-meta: session ${scrubbed.text} -> ${verdict.route} (${verdict.reasons.join(', ')})`)
+  ctx.logger.info(`session-meta: session ${scrubbed.text} -> ${route} (${reasons.join(', ')})`)
   try {
     // v8 aggregate cache for the post-hoc steering driver (reads finalized
     // state after exit). Inside the existing guard so a cache failure can

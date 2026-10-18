@@ -323,7 +323,7 @@ describe('jev backend wiring', () => {
     const { join: joinPath } = await import('node:path')
     const lines = (await readFile(joinPath(home, 'meta', 'approver-decisions.jsonl'), 'utf8')).trim().split('\n')
     expect(lines).toHaveLength(1)
-    expect(JSON.parse(lines[0] as string)).toMatchObject({ layer: 'judge', outcome: 'allowed-once', judgeModel: 'jev-1.14.0' })
+    expect(JSON.parse(lines[0] as string)).toMatchObject({ layer: 'judge', outcome: 'allowed-once', judgeModel: 'jev-1.14.0', callId: 'c-jev-ok' })
   })
 
   it('never softens reject, even at low top-probability', async () => {

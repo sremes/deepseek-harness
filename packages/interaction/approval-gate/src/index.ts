@@ -181,25 +181,32 @@ export function apply(ctx: Context, config: Config): void {
   )
   /** Live tool calls by string call id: the ask payload carries none. */
   const calls = new Map<string, ObservedCall>()
+  /** Ledger-safe call id: opaque join key, never a secret. */
+  function ledgerCallId(raw: unknown): string | undefined {
+    return typeof raw === 'string' && raw !== '' ? raw : undefined
+  }
   /** Delegate a waterfall ask onward and ledger the downstream outcome. */
   async function delegate(
     next: () => Promise<ApprovalOutcome>,
     reason: DelegateReason,
+    callId?: string,
   ): Promise<ApprovalOutcome> {
     const outcome = await next()
-    await recordDecision(resolved.dshHome, { layer: 'delegate', outcome, reason })
+    await recordDecision(resolved.dshHome, { layer: 'delegate', outcome, reason, ...(callId === undefined ? {} : { callId }) })
     return outcome
   }
   /** Record a claimed decision (never a delegation). */
   async function claim(
     layer: DecisionLayer,
     outcome: ApprovalOutcome,
+    callId: string | undefined,
     shape?: { bin: string; argc: number; metachars: boolean },
     extra?: { grounds?: string; judgeModel?: string; latencyMs?: number },
   ): Promise<void> {
     await recordDecision(resolved.dshHome, {
       layer,
       outcome,
+      ...(callId === undefined ? {} : { callId }),
       ...(shape ?? {}),
       ...(extra ?? {}),
     })
@@ -224,22 +231,23 @@ export function apply(ctx: Context, config: Config): void {
   })
   ctx.on('approval/request', async (req, next): Promise<ApprovalOutcome> => {
     try {
-      if (req.toolName !== 'bash') return delegate(next, 'non-bash')
+      if (req.toolName !== 'bash') return delegate(next, 'non-bash', ledgerCallId(req.callId))
       const callId = typeof req.callId === 'string' ? req.callId : String(req.callId ?? '')
+      const id = ledgerCallId(req.callId) ?? (callId === '' ? undefined : callId)
       const command = commandForCall(calls, callId)
       if (command === undefined) {
         ctx.logger.info(`approval-gate: delegating ${callId} (command unrecoverable)`)
-        return delegate(next, 'unrecoverable')
+        return delegate(next, 'unrecoverable', id)
       }
       const shape = classifyCommand(command)
       if (isBlacklisted(command)) {
         ctx.logger.info(`approval-gate: rejecting blacklisted command for ${callId}`)
-        await claim('blacklist', 'rejected', shape)
+        await claim('blacklist', 'rejected', id, shape)
         return 'rejected'
       }
       if (allowlisted(command)) {
         ctx.logger.info(`approval-gate: allowing allowlisted command for ${callId}`)
-        await claim('allowlist', 'allowed-once', shape)
+        await claim('allowlist', 'allowed-once', id, shape)
         return 'allowed-once'
       }
       const apiKey = process.env[resolved.apiKeyEnv] ?? ''
@@ -247,11 +255,11 @@ export function apply(ctx: Context, config: Config): void {
         const jevKey = process.env[resolved.jevKeyEnv] ?? ''
         if (jevKey === '') {
           ctx.logger.info(`approval-gate: delegating ${callId} (no ${resolved.jevKeyEnv})`)
-          return delegate(next, 'no-key')
+          return delegate(next, 'no-key', id)
         }
         if (!(await takeBudget(resolved.dshHome, resolved.maxCallsPerDay))) {
           ctx.logger.info(`approval-gate: delegating ${callId} (judge budget spent)`)
-          return delegate(next, 'budget-spent')
+          return delegate(next, 'budget-spent', id)
         }
         const header = (req.agent as unknown as { session: { header?: { cwd?: unknown } } }).session.header
         const cwd = typeof header?.cwd === 'string' ? header.cwd : ''
@@ -260,32 +268,33 @@ export function apply(ctx: Context, config: Config): void {
           { command: command.slice(0, MAX_JUDGE_COMMAND_CHARS), cwd, requestedMode: mode, justification: req.reason ?? '' },
           { url: resolved.jevUrl, model: resolved.jevModel, apiKey: jevKey, timeoutMs: resolved.timeoutMs },
         )
-        if (verdict === undefined) return delegate(next, 'judge-fault')
+        if (verdict === undefined) return delegate(next, 'judge-fault', id)
         const detail =
           `jev ${verdict.choice} top=${verdict.top.toFixed(2)} conf=${verdict.confidence.toFixed(2)}`
         if (verdict.choice === 'reject') {
           ctx.logger.info(`approval-gate: jev reject for ${callId}: ${detail}`)
-          await claim('judge', 'rejected', shape, { grounds: detail, judgeModel: verdict.model, latencyMs: verdict.latencyMs })
+          await claim('judge', 'rejected', id, shape, { grounds: detail, judgeModel: verdict.model, latencyMs: verdict.latencyMs })
           return 'rejected'
         }
         if (verdict.top < resolved.escalateBelow) {
           ctx.logger.info(`approval-gate: jev uncertain for ${callId}: ${detail}`)
           await recordDecision(resolved.dshHome, {
-            layer: 'judge', outcome: 'uncertain', grounds: detail, judgeModel: verdict.model, latencyMs: verdict.latencyMs, ...shape,
+            layer: 'judge', outcome: 'uncertain', grounds: detail, judgeModel: verdict.model, latencyMs: verdict.latencyMs,
+            ...(id === undefined ? {} : { callId: id }), ...shape,
           })
-          return delegate(next, 'uncertain')
+          return delegate(next, 'uncertain', id)
         }
         ctx.logger.info(`approval-gate: jev allow for ${callId}: ${detail}`)
-        await claim('judge', 'allowed-once', shape, { grounds: detail, judgeModel: verdict.model, latencyMs: verdict.latencyMs })
+        await claim('judge', 'allowed-once', id, shape, { grounds: detail, judgeModel: verdict.model, latencyMs: verdict.latencyMs })
         return 'allowed-once'
       }
       if (apiKey === '') {
         ctx.logger.info(`approval-gate: delegating ${callId} (no ${resolved.apiKeyEnv})`)
-        return delegate(next, 'no-key')
+        return delegate(next, 'no-key', id)
       }
       if (!(await takeBudget(resolved.dshHome, resolved.maxCallsPerDay))) {
         ctx.logger.info(`approval-gate: delegating ${callId} (judge budget spent)`)
-        return delegate(next, 'budget-spent')
+        return delegate(next, 'budget-spent', id)
       }
       // Session and header exist by the service's own precondition (it read
       // session.seq before dispatch), so this read is total by construction.
@@ -305,13 +314,13 @@ export function apply(ctx: Context, config: Config): void {
         },
       )
       const latencyMs = Date.now() - started
-      if (verdict === undefined) return delegate(next, 'judge-fault')
+      if (verdict === undefined) return delegate(next, 'judge-fault', id)
       ctx.logger.info(`approval-gate: judge ${verdict.verdict} for ${callId}: ${verdict.grounds}`)
       const outcome = verdict.verdict === 'allow' ? 'allowed-once' : 'rejected'
-      await claim('judge', outcome, shape, { grounds: verdict.grounds, judgeModel: resolved.judgeModel, latencyMs })
+      await claim('judge', outcome, id, shape, { grounds: verdict.grounds, judgeModel: resolved.judgeModel, latencyMs })
       return outcome
     } catch {
-      return delegate(next, 'exception')
+      return delegate(next, 'exception', ledgerCallId(req.callId))
     }
   })
 }

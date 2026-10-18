@@ -49,6 +49,8 @@ export interface DecisionRecord {
   readonly outcome: string
   /** Delegation cause; present only on `delegate` lines. */
   readonly reason?: DelegateReason | undefined
+  /** Tool-call id joining the gate assessment to its downstream outcome. */
+  readonly callId?: string | undefined
   /** First whitespace-delimited token of the command, when recoverable. */
   readonly bin?: string | undefined
   /** Whitespace-delimited token count, when recoverable. */

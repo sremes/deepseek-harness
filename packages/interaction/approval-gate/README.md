@@ -72,7 +72,7 @@ Fail-closed throughout: the only grant is `allowed-once`, the gate never throws 
 
 ### Decision ledger
 
-Every ask appends one JSONL line to `$DSH_HOME/meta/approver-decisions.jsonl` (`src/ledger.ts`). The raw command is never stored — only its shape (`bin`, `argc`, `metachars`) — so secrets in commands cannot leak into the file. Delegations record the downstream outcome, which is the lapse signal: `delegate` + `unavailable`/`cancelled` means no human decided.
+Every ask appends one JSONL line to `$DSH_HOME/meta/approver-decisions.jsonl` (`src/ledger.ts`). The raw command is never stored — only its shape (`bin`, `argc`, `metachars`) — so secrets in commands cannot leak into the file. Each line carries the tool-call id (`callId`), which is the exact join key session-meta uses to attribute gate-vs-human divergences to the session that owns the call. Delegations record the downstream outcome, which is the lapse signal: `delegate` + `unavailable`/`cancelled` means no human decided.
 
 Two queries this enables (run against any home):
 
