@@ -10,7 +10,7 @@
 
 import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { Message, StreamChunk } from '@deepseek-ai/dsh-llm'
-import type { EvaluatorProposal, SessionProjection, SteeringRecord } from './types.ts'
+import type { DualEvaluatorProposals, EvaluatorProposal, SessionProjection, SteeringRecord } from './types.ts'
 
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
@@ -62,6 +62,19 @@ export interface EvaluatorResult {
   readonly outputTokens: number
 }
 
+/** One dual-lens evaluator run: both validated lens proposals plus measured usage. */
+export interface DualEvaluatorResult extends DualEvaluatorProposals {
+  readonly inputTokens: number
+  readonly outputTokens: number
+}
+
+/** Raw text plus measured usage from one evaluator call (parsing happens after). */
+export interface EvaluatorReply {
+  readonly text: string
+  readonly inputTokens: number
+  readonly outputTokens: number
+}
+
 const EVALUATOR_SYSTEM = [
   'You turn one session into a reusable skill draft.',
   'You receive a JSON state projection (goal, tool steps WITH the arguments the model actually passed, error digests, recovery marks, skills consulted, turn outcome, steering messages) plus the human correction, if any.',
@@ -78,6 +91,11 @@ const EVALUATOR_SYSTEM = [
   'If the correction restates what the session already did — no observable tool/argument/order delta — decline prescription: leave prescribed empty and set no_contrast to true (NO_ENTRY discipline).',
   'Prefer patching what exists: the skillsConsulted list names skills already covering this territory — aim trigger_signature at the one in play rather than inventing a parallel skill. The known_signatures list names drafts already proposed — do not re-propose them.',
   'Reply with exactly one JSON object, no fences, no prose, with keys: intent (one sentence), forbidden (array of strings, may be empty), prescribed (array of strings; non-empty when completed is true, empty when completed is false or when no_contrast is true), trigger_signature (short kebab-case symptom tag), trigger_conditions (one or two sentences: when a future session should load this skill), platform (e.g. dsh-headless or unknown), evidence (array of non-empty strings; each names the step/tool-call supporting one prescribed/forbidden clause, e.g. `step 4: retryArgs added --flag`), no_contrast (optional boolean; true only when no observable delta supports a prescription).',
+  'You emit TWO lenses in one reply: an invariant lens and a domain lens.',
+  'The invariant lens captures the cross-domain agentic deficiency (planning, tool use, delegation, verification habits); its trigger_signature starts with `general-` plus a kebab-case symptom (e.g. `general-unconfirmed-destructive-path`).',
+  'The domain lens captures the task-specific procedure or constraints; its trigger_signature names the task symptom.',
+  'Reply with exactly one JSON object, no fences, no prose, with keys invariant and domain. Each holds one proposal object with the schema above (intent, forbidden, prescribed, trigger_signature, trigger_conditions, platform, evidence, optional no_contrast), or null when that lens has no content.',
+  'A lens object with no_contrast true counts as declined, like null. Missing keys count as declined. Each lens needs its own evidence array: a citation supporting clauses in both lenses must appear in each lens\u2019s evidence array to count there.',
 ].join('\n')
 
 /**
@@ -158,6 +176,58 @@ export function parseProposal(text: string, completed = true): EvaluatorProposal
   }
 }
 
+/**
+ * Parse one dual-lens reply into its invariant and domain proposals. Each
+ * present lens is independently schema-validated through `parseProposal`
+ * with its own evidence (a citation used in both lenses must be duplicated
+ * into each lens's evidence array). A lens is declined when its key is
+ * missing, holds null, or holds an object with `no_contrast: true`
+ * (bare or schema-valid). Anything else — a legacy single-proposal shape,
+ * a non-object lens, a schema-invalid lens object, or an invariant
+ * `trigger_signature` without the `general-` prefix — rejects the whole
+ * reply (fail closed, same as today). Pure: throw sites are unit-covered.
+ *
+ * @param text - raw model output (one JSON object, fences tolerated).
+ * @param completed - whether the motivating session completed (gates `prescribed` per lens).
+ * @returns the two lens proposals, each null when declined.
+ */
+export function parseDualProposals(text: string, completed = true): DualEvaluatorProposals {
+  const json = extractJsonObject(text)
+  let reply: Record<string, unknown>
+  try {
+    reply = JSON.parse(json) as Record<string, unknown>
+  } catch {
+    throw new Error('session-meta: dual evaluator reply is not valid JSON')
+  }
+  if (typeof reply.intent === 'string') {
+    throw new Error('session-meta: dual evaluator reply holds a single proposal, not invariant/domain lenses')
+  }
+  return {
+    invariant: parseLens(reply.invariant, 'invariant', completed),
+    domain: parseLens(reply.domain, 'domain', completed),
+  }
+}
+
+/**
+ * Validate one lens value: missing/null declines, an explicit
+ * `no_contrast: true` object declines without further checks, any other
+ * object must satisfy `parseProposal` (whose own `no_contrast` verdict also
+ * declines). Non-object lens values reject the reply.
+ */
+function parseLens(value: unknown, lens: 'invariant' | 'domain', completed: boolean): EvaluatorProposal | null {
+  if (value === undefined || value === null) return null
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`session-meta: dual evaluator ${lens} lens must be an object or null`)
+  }
+  const record = value as Record<string, unknown>
+  if (record.no_contrast === true) return null
+  const proposal = parseProposal(JSON.stringify(record), completed)
+  if (lens === 'invariant' && !proposal.triggerSignature.startsWith('general-')) {
+    throw new Error('session-meta: dual evaluator invariant lens trigger_signature must start with general-')
+  }
+  return proposal
+}
+
 function isNonEmptyStringArray(value: unknown): value is readonly string[] {
   return (
     Array.isArray(value) &&
@@ -182,16 +252,23 @@ function extractJsonObject(text: string): string {
 }
 
 /**
- * Run one evaluator call: stream, assemble text-only output, validate the
- * proposal, and report measured token usage (0/0 when the adapter omits
- * usage — the call-count cap still bounds spend).
+ * Run one evaluator call: stream, assemble text-only output, and report
+ * measured token usage (0/0 when the adapter omits usage — the call-count
+ * cap still bounds spend). Parsing happens after; callers choose the
+ * single-proposal or dual-lens shape.
+ *
+ * @param llm - model service streaming the evaluator reply.
+ * @param route - resolved evaluator route and limits.
+ * @param input - evaluator input (projection plus steering).
+ * @param signal - optional caller cancellation.
+ * @returns the raw reply text plus measured token usage.
  */
-export async function runEvaluator(
+export async function collectEvaluatorReply(
   llm: EvaluatorLlm,
   route: EvaluatorRoute,
   input: EvaluatorInput,
   signal?: AbortSignal,
-): Promise<EvaluatorResult> {
+): Promise<EvaluatorReply> {
   const prompt = buildEvaluatorPrompt(input)
   if (Buffer.byteLength(prompt, 'utf8') > route.maxInputBytes) {
     throw new Error(`session-meta: evaluator input exceeds maxInputBytes ${route.maxInputBytes}`)
@@ -232,9 +309,45 @@ export async function runEvaluator(
     throw new Error('session-meta: evaluator produced no text')
   }
   const usage = assembler.usage
+  return { text, inputTokens: usage?.inputTokens ?? 0, outputTokens: usage?.outputTokens ?? 0 }
+}
+
+/**
+ * Run one evaluator call: stream, assemble text-only output, validate the
+ * proposal, and report measured token usage (0/0 when the adapter omits
+ * usage — the call-count cap still bounds spend).
+ */
+export async function runEvaluator(
+  llm: EvaluatorLlm,
+  route: EvaluatorRoute,
+  input: EvaluatorInput,
+  signal?: AbortSignal,
+): Promise<EvaluatorResult> {
+  const reply = await collectEvaluatorReply(llm, route, input, signal)
   return {
-    proposal: parseProposal(text, input.projection.completed),
-    inputTokens: usage?.inputTokens ?? 0,
-    outputTokens: usage?.outputTokens ?? 0,
+    proposal: parseProposal(reply.text, input.projection.completed),
+    inputTokens: reply.inputTokens,
+    outputTokens: reply.outputTokens,
+  }
+}
+
+/**
+ * Run one dual-lens evaluator call: stream, assemble text-only output,
+ * validate both lens proposals, and report measured token usage (0/0 when
+ * the adapter omits usage — the call-count cap still bounds spend).
+ */
+export async function runDualEvaluator(
+  llm: EvaluatorLlm,
+  route: EvaluatorRoute,
+  input: EvaluatorInput,
+  signal?: AbortSignal,
+): Promise<DualEvaluatorResult> {
+  const reply = await collectEvaluatorReply(llm, route, input, signal)
+  const proposals = parseDualProposals(reply.text, input.projection.completed)
+  return {
+    invariant: proposals.invariant,
+    domain: proposals.domain,
+    inputTokens: reply.inputTokens,
+    outputTokens: reply.outputTokens,
   }
 }

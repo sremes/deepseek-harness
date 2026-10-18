@@ -8,19 +8,20 @@
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
-import type { EvaluatorLlm, EvaluatorRoute } from './evaluator.ts'
-import { runEvaluator } from './evaluator.ts'
+import type { EvaluatorLlm, EvaluatorReply, EvaluatorRoute } from './evaluator.ts'
+import { collectEvaluatorReply, parseDualProposals, parseProposal } from './evaluator.ts'
 import { judgePair } from './judge.ts'
 import { evaluateL0 } from './l0.ts'
 import { evaluateL1 } from './l1.ts'
 import { projectSession as buildProjection } from './projection.ts'
 import { redactString } from './redact.ts'
 import type { MetaRoute, ReplayOutcome, ReplayRunner } from './types.ts'
+import type { DualEvaluatorProposals } from './types.ts'
 import { buildReplaySummary, compareForHarm } from './replay.ts'
 import { parseSteeringFile, processedSteeringDir, steeringFilePath } from './steering.ts'
 import { hasExplicitPersistRequest, hasRecoveredErrors } from './triage.ts'
 import type { MetaStore } from './store.ts'
-import type { EvaluatorProposal, SessionAggregate, SteeringRecord } from './types.ts'
+import type { EvaluatorProposal, SessionAggregate, SessionProjection, SteeringRecord } from './types.ts'
 import { renderDraft, slugify, writeSkillDraft, promoteDraftFile } from './writer.ts'
 
 /** Whether a steering file exists for one session (flush-path pre-check). */
@@ -52,10 +53,13 @@ export interface EvaluationDeps {
 /** Rolling window for the weekly live-promotion blast cap (protocol constant). */
 export const PROMOTION_WINDOW_MS = 7 * 24 * 3600 * 1000
 
-/** Outcome of one Track A evaluation attempt. */
+/** Outcome of one Track A evaluation attempt. Dual-lens replies also carry
+ * the per-lens pipeline outcomes in processing order (domain first) so
+ * nothing is lost in the summary `decision`/`draftSlug`. */
 export interface EvaluationOutcome {
   readonly decision: string
   readonly draftSlug: string | null
+  readonly drafts?: readonly EvaluationOutcome[] | undefined
 }
 
 /** UTC-midnight millis for `now` (the daily budget window). */
@@ -167,9 +171,9 @@ export async function evaluateTrackASession(
     originalTask: redactString(record.originalTask, { cwd: aggregate.cwd }).text,
     correction: redactString(record.correction, { cwd: aggregate.cwd }).text,
   }))
-  let result: { proposal: EvaluatorProposal; inputTokens: number; outputTokens: number }
+  let reply: EvaluatorReply
   try {
-    result = await runEvaluator(
+    reply = await collectEvaluatorReply(
       llm,
       config,
       { sessionId: aggregate.sessionId, projection, steering: redactedSteering, knownSignatures: listKnownSignatures(config.skillsDir) },
@@ -179,34 +183,103 @@ export async function evaluateTrackASession(
     deps.log(`session-meta: evaluator failed for ${aggregate.sessionId}: ${String(error)}`)
     return { decision: 'llm-error', draftSlug: null }
   }
-  // NO_ENTRY discipline: the evaluator found no observable contrast, so no
-  // draft is owed. Decline explicitly here — before L0/L1 — so correct
-  // declines never masquerade as contract failures in the veto metrics.
-  if (result.proposal.noContrast === true) {
-    deps.store.recordEvaluation({ ts: now, sessionId: aggregate.sessionId, inputTokens: result.inputTokens, outputTokens: result.outputTokens, decision: 'declined:no-contrast', draftSlug: null })
-    deps.log(`session-meta: evaluator declined prescription for ${aggregate.sessionId} (no observable contrast)`)
-    return { decision: 'declined:no-contrast', draftSlug: null }
+  let dual: DualEvaluatorProposals | undefined
+  try {
+    dual = parseDualProposals(reply.text, projection.completed)
+  } catch {
+    dual = undefined
   }
+  if (dual === undefined) {
+    // Legacy single-proposal reply (backward compat): exactly the pre-dual
+    // behavior — one pipeline run, one ledger row, a bare outcome.
+    let proposal: EvaluatorProposal
+    try {
+      proposal = parseProposal(reply.text, projection.completed)
+    } catch (error) {
+      deps.store.recordEvaluation({ ts: now, sessionId: aggregate.sessionId, inputTokens: 0, outputTokens: 0, decision: 'llm-error', draftSlug: null })
+      deps.log(`session-meta: evaluator failed for ${aggregate.sessionId}: ${String(error)}`)
+      return { decision: 'llm-error', draftSlug: null }
+    }
+    // NO_ENTRY discipline: the evaluator found no observable contrast, so no
+    // draft is owed. Decline explicitly here — before L0/L1 — so correct
+    // declines never masquerade as contract failures in the veto metrics.
+    if (proposal.noContrast === true) {
+      return declineLens(deps, aggregate.sessionId, now, reply.inputTokens, reply.outputTokens)
+    }
+    return runLensPipeline(deps, llm, config, aggregate, projection, proposal, reply, now, fileRecord)
+  }
+  // Dual-lens reply: run the pipeline per non-null lens, domain first (the
+  // motivating correction outranks the general lesson when replay budget
+  // runs short). Token accounting records the real call usage on the
+  // first-processed (domain) ledger row and 0/0 on the second: the pair
+  // sums to one call, never double-counting spend.
+  const domainOutcome = dual.domain === null
+    ? declineLens(deps, aggregate.sessionId, now, reply.inputTokens, reply.outputTokens)
+    : await runLensPipeline(deps, llm, config, aggregate, projection, dual.domain, reply, now, fileRecord)
+  const invariantOutcome = dual.invariant === null
+    ? declineLens(deps, aggregate.sessionId, now, 0, 0)
+    : await runLensPipeline(deps, llm, config, aggregate, projection, dual.invariant, { inputTokens: 0, outputTokens: 0 }, now, fileRecord)
+  const drafts: readonly EvaluationOutcome[] = [domainOutcome, invariantOutcome]
+  const firstPromoted = drafts.find(outcome => outcome.decision === 'promoted')
+  return firstPromoted === undefined
+    ? { decision: domainOutcome.decision, draftSlug: null, drafts }
+    : { decision: 'promoted', draftSlug: firstPromoted.draftSlug, drafts }
+}
+
+/**
+ * Ledger one declined lens (`declined:no-contrast`, NO_ENTRY discipline),
+ * exactly like the pre-dual single decline. Ledger plus log; never throws.
+ */
+function declineLens(
+  deps: EvaluationDeps,
+  sessionId: string,
+  now: number,
+  inputTokens: number,
+  outputTokens: number,
+): EvaluationOutcome {
+  deps.store.recordEvaluation({ ts: now, sessionId, inputTokens, outputTokens, decision: 'declined:no-contrast', draftSlug: null })
+  deps.log(`session-meta: evaluator declined prescription for ${sessionId} (no observable contrast)`)
+  return { decision: 'declined:no-contrast', draftSlug: null }
+}
+
+/**
+ * Run the L0–L4 pipeline for one lens proposal: L0/L1 vetoes, gated draft
+ * write, L2 motivating-task replay, L3 regression sample, then promotion
+ * under the weekly blast cap. Every failure is contained and ledgered with
+ * the given (already-split) token usage — the wrapper owns the split, this
+ * function only records it.
+ */
+async function runLensPipeline(
+  deps: EvaluationDeps,
+  llm: EvaluatorLlm,
+  config: EvaluationConfig,
+  aggregate: SessionAggregate,
+  projection: SessionProjection,
+  proposal: EvaluatorProposal,
+  usage: { readonly inputTokens: number; readonly outputTokens: number },
+  now: number,
+  fileRecord: SteeringRecord | undefined,
+): Promise<EvaluationOutcome> {
   mkdirSync(config.skillsDir, { recursive: true })
   const provenance = { sessions: [aggregate.sessionId], mode: aggregate.origin ?? 'unknown' } as const
   // M3 L0: cheapest layer first — render in memory and veto before any file
   // lands. The preview slug only feeds the `name:` field (writeSkillDraft
   // may add a numeric suffix); emptiness is unaffected by the suffix.
-  const gate = evaluateL0(renderDraft(result.proposal, provenance, slugify(result.proposal.triggerSignature)))
+  const gate = evaluateL0(renderDraft(proposal, provenance, slugify(proposal.triggerSignature)))
   if (!gate.pass) {
-    deps.store.recordEvaluation({ ts: now, sessionId: aggregate.sessionId, inputTokens: result.inputTokens, outputTokens: result.outputTokens, decision: 'l0-rejected', draftSlug: null })
+    deps.store.recordEvaluation({ ts: now, sessionId: aggregate.sessionId, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, decision: 'l0-rejected', draftSlug: null })
     deps.log(`session-meta: draft failed L0 contract for ${aggregate.sessionId}: ${gate.violations.join('; ')}`)
     return { decision: 'l0-rejected', draftSlug: null }
   }
   // M3 L1: the Prescribed Pattern must hold a mechanically checkable clause
   // against the motivating session's tool calls. Same veto shape as L0.
-  const selfTest = evaluateL1(result.proposal, projection.steps.map(step => step.tool))
+  const selfTest = evaluateL1(proposal, projection.steps.map(step => step.tool))
   if (!selfTest.pass) {
-    deps.store.recordEvaluation({ ts: now, sessionId: aggregate.sessionId, inputTokens: result.inputTokens, outputTokens: result.outputTokens, decision: 'l1-rejected', draftSlug: null })
+    deps.store.recordEvaluation({ ts: now, sessionId: aggregate.sessionId, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, decision: 'l1-rejected', draftSlug: null })
     deps.log(`session-meta: draft failed L1 self-test for ${aggregate.sessionId}: ${selfTest.violations.join('; ')}`)
     return { decision: 'l1-rejected', draftSlug: null }
   }
-  const draft = writeSkillDraft(config.skillsDir, result.proposal, {
+  const draft = writeSkillDraft(config.skillsDir, proposal, {
     sessions: [aggregate.sessionId],
     mode: aggregate.origin ?? 'unknown',
   })
@@ -238,21 +311,21 @@ export async function evaluateTrackASession(
         deps.store.recordReplayRun(now)
       } catch (error) {
         rmSync(draft.dir, { recursive: true, force: true })
-        deps.store.recordEvaluation({ ts: now, sessionId: aggregate.sessionId, inputTokens: result.inputTokens, outputTokens: result.outputTokens, decision: 'l2-error', draftSlug: null })
+        deps.store.recordEvaluation({ ts: now, sessionId: aggregate.sessionId, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, decision: 'l2-error', draftSlug: null })
         deps.log(`session-meta: replay failed for ${aggregate.sessionId}: ${String(error)}`)
         return { decision: 'l2-error', draftSlug: null }
       }
       const harm = compareForHarm(candidate, baseline)
       if (!harm.notWorse) {
         rmSync(draft.dir, { recursive: true, force: true })
-        deps.store.recordEvaluation({ ts: now, sessionId: aggregate.sessionId, inputTokens: result.inputTokens, outputTokens: result.outputTokens, decision: 'l2-rejected', draftSlug: null })
+        deps.store.recordEvaluation({ ts: now, sessionId: aggregate.sessionId, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, decision: 'l2-rejected', draftSlug: null })
         deps.log(`session-meta: draft failed L2 replay for ${aggregate.sessionId}: ${harm.reasons.join('; ')}`)
         return { decision: 'l2-rejected', draftSlug: null }
       }
       const verdict = await judgePair(llm, config, buildReplaySummary(candidate), buildReplaySummary(baseline))
       if (!verdict.pass) {
         rmSync(draft.dir, { recursive: true, force: true })
-        deps.store.recordEvaluation({ ts: now, sessionId: aggregate.sessionId, inputTokens: result.inputTokens, outputTokens: result.outputTokens, decision: 'l2-rejected', draftSlug: null })
+        deps.store.recordEvaluation({ ts: now, sessionId: aggregate.sessionId, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, decision: 'l2-rejected', draftSlug: null })
         deps.log(`session-meta: draft failed L2 judge for ${aggregate.sessionId}: ${verdict.grounds.join('; ')}`)
         return { decision: 'l2-rejected', draftSlug: null }
       }
@@ -262,7 +335,7 @@ export async function evaluateTrackASession(
   // against up to 3 past same-trigger_signature sessions. Skips preserve
   // promotion (no re-drive queue exists yet); every veto removes the draft
   // dir, ledgers, and returns.
-  const pastSessions = deps.store.listPromotionSessions(result.proposal.triggerSignature, 3, aggregate.sessionId)
+  const pastSessions = deps.store.listPromotionSessions(proposal.triggerSignature, 3, aggregate.sessionId)
   if (pastSessions.length === 0) {
     deps.log(`session-meta: l3 skipped (no history) for ${aggregate.sessionId}`)
   } else if (replayRunner === undefined) {
@@ -284,21 +357,21 @@ export async function evaluateTrackASession(
           deps.store.recordReplayRun(now)
         } catch (error) {
           rmSync(draft.dir, { recursive: true, force: true })
-          deps.store.recordEvaluation({ ts: now, sessionId: aggregate.sessionId, inputTokens: result.inputTokens, outputTokens: result.outputTokens, decision: 'l3-error', draftSlug: null })
+          deps.store.recordEvaluation({ ts: now, sessionId: aggregate.sessionId, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, decision: 'l3-error', draftSlug: null })
           deps.log(`session-meta: l3 replay failed for ${aggregate.sessionId} (pair ${pairIndex}): ${String(error)}`)
           return { decision: 'l3-error', draftSlug: null }
         }
         const pastHarm = compareForHarm(pastCandidate, pastBaseline)
         if (!pastHarm.notWorse) {
           rmSync(draft.dir, { recursive: true, force: true })
-          deps.store.recordEvaluation({ ts: now, sessionId: aggregate.sessionId, inputTokens: result.inputTokens, outputTokens: result.outputTokens, decision: 'l3-rejected', draftSlug: null })
+          deps.store.recordEvaluation({ ts: now, sessionId: aggregate.sessionId, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, decision: 'l3-rejected', draftSlug: null })
           deps.log(`session-meta: draft failed L3 replay for ${aggregate.sessionId} (pair ${pairIndex}): ${pastHarm.reasons.join('; ')}`)
           return { decision: 'l3-rejected', draftSlug: null }
         }
         const pastVerdict = await judgePair(llm, config, buildReplaySummary(pastCandidate), buildReplaySummary(pastBaseline))
         if (!pastVerdict.pass) {
           rmSync(draft.dir, { recursive: true, force: true })
-          deps.store.recordEvaluation({ ts: now, sessionId: aggregate.sessionId, inputTokens: result.inputTokens, outputTokens: result.outputTokens, decision: 'l3-rejected', draftSlug: null })
+          deps.store.recordEvaluation({ ts: now, sessionId: aggregate.sessionId, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, decision: 'l3-rejected', draftSlug: null })
           deps.log(`session-meta: draft failed L3 judge for ${aggregate.sessionId} (pair ${pairIndex}): ${pastVerdict.grounds.join('; ')}`)
           return { decision: 'l3-rejected', draftSlug: null }
         }
@@ -310,25 +383,25 @@ export async function evaluateTrackASession(
   // (0.40, one -0.15 regression archives), not a waiting room. L4-full
   // weekly (later slice) acts as demote-only. Live flips stay under the
   // weekly blast cap; over-cap passes hold at probation.
-  deps.store.recordPromotion(result.proposal.triggerSignature, draft.slug)
+  deps.store.recordPromotion(proposal.triggerSignature, draft.slug)
   deps.store.recordPromotionSession(
-    result.proposal.triggerSignature,
+    proposal.triggerSignature,
     aggregate.sessionId,
     taskInputUsedForL2 ?? aggregate.openingTask ?? projection.goal,
     now,
   )
   if (deps.store.countPromotionsSince(now - PROMOTION_WINDOW_MS) <= config.maxPromotionsPerWeek) {
-    deps.store.recordLive(result.proposal.triggerSignature)
+    deps.store.recordLive(proposal.triggerSignature)
     promoteDraftFile(draft.dir)
     deps.store.recordEvaluation({
       ts: now,
       sessionId: aggregate.sessionId,
-      inputTokens: result.inputTokens,
-      outputTokens: result.outputTokens,
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
       decision: 'promoted',
       draftSlug: draft.slug,
     })
-    if (fileRecord !== undefined) {
+    if (fileRecord !== undefined && existsSync(steeringFilePath(deps.home, aggregate.sessionId))) {
       const processedDir = processedSteeringDir(deps.home)
       mkdirSync(processedDir, { recursive: true })
       renameSync(steeringFilePath(deps.home, aggregate.sessionId), join(processedDir, `${aggregate.sessionId}.json`))
@@ -340,12 +413,12 @@ export async function evaluateTrackASession(
   deps.store.recordEvaluation({
     ts: now,
     sessionId: aggregate.sessionId,
-    inputTokens: result.inputTokens,
-    outputTokens: result.outputTokens,
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
     decision: 'draft-written',
     draftSlug: draft.slug,
   })
-  if (fileRecord !== undefined) {
+  if (fileRecord !== undefined && existsSync(steeringFilePath(deps.home, aggregate.sessionId))) {
     const processedDir = processedSteeringDir(deps.home)
     mkdirSync(processedDir, { recursive: true })
     renameSync(steeringFilePath(deps.home, aggregate.sessionId), join(processedDir, `${aggregate.sessionId}.json`))

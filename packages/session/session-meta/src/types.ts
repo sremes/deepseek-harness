@@ -150,6 +150,18 @@ export interface SessionProjection {
 }
 
 /**
+ * Dual-lens evaluator reply (Harness² steal #2): one model call emits an
+ * invariant lens (cross-domain agentic deficiency: planning, tool use,
+ * delegation, verification habits) plus a domain lens (task-specific
+ * procedure/constraints). Each lens is independently schema-validated with
+ * its own evidence; a null lens is declined (no content).
+ */
+export interface DualEvaluatorProposals {
+  readonly invariant: EvaluatorProposal | null
+  readonly domain: EvaluatorProposal | null
+}
+
+/**
  * Schema-validated evaluator proposal (Plan-V1 §3.3): the model's output is
  * proposal-only; the writer and (in M3) the L0–L4 pipeline decide.
  */

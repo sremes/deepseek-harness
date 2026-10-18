@@ -16,7 +16,7 @@ import {
 import { steeringFilePath } from '../src/steering.ts'
 import { MetaStore } from '../src/store.ts'
 import { FakeReplayRunner } from '../src/replay.ts'
-import type { ReplayOutcome, ReplayRunner } from '../src/types.ts'
+import type { EvaluatorLedgerRow, ReplayOutcome, ReplayRunner } from '../src/types.ts'
 import { makeAggregate, textChunks, VALID_PROPOSAL_JSON } from './helpers.ts'
 
 const CONFIG: EvaluationConfig = {
@@ -518,5 +518,184 @@ describe('evaluateTrackASession', () => {
     expect(readFileSync(join(skills, 'destructive-path-confirm', 'SKILL.md'), 'utf8')).toContain('disable-model-invocation: true')
     expect(store?.getSkill('destructive-path-confirm')).toMatchObject({ status: 'probation' })
     expect(logs.join('\n')).toMatch(/promotion capped \(blast radius\), held at probation/)
+  })
+})
+
+describe('evaluateTrackASession dual lenses', () => {
+  const INVARIANT_PROPOSAL = {
+    intent: 'Restate delegation targets before running them',
+    forbidden: ['Never delegate a destructive step without restating its target'],
+    prescribed: ['Echo the resolved `path` before delegating the `rm` step'],
+    trigger_signature: 'general-unverified-delegation',
+    trigger_conditions: 'Use when a session delegates tool calls past an uncertain point',
+    platform: 'dsh-headless',
+    evidence: ['step 2: delegated `rm` without restating the target path'],
+  }
+  const DOMAIN_PROPOSAL = JSON.parse(VALID_PROPOSAL_JSON) as Record<string, unknown>
+
+  function dualText(invariant: unknown, domain: unknown): string {
+    return JSON.stringify({ invariant, domain })
+  }
+
+  function dualLlm(text: string, usage = { inputTokens: 5, outputTokens: 6 }): EvaluatorLlm {
+    const chunks = textChunks(text, usage)
+    return {
+      async *stream(): AsyncIterable<StreamChunk> {
+        yield* chunks
+      },
+    }
+  }
+
+  function scriptedDualLlm(text: string, verdicts: readonly string[]): EvaluatorLlm {
+    const runs = [
+      textChunks(text, { inputTokens: 5, outputTokens: 6 }),
+      ...verdicts.map(verdict =>
+        textChunks(JSON.stringify({ verdict, grounds: 'Candidate retried `path` and the result shows ok' })),
+      ),
+    ]
+    let calls = 0
+    return {
+      async *stream(): AsyncIterable<StreamChunk> {
+        const chunks = runs[calls] ?? []
+        calls += 1
+        yield* chunks
+      },
+    }
+  }
+
+  function captureLedger(): { rows: EvaluatorLedgerRow[] } {
+    if (store === undefined) throw new Error('store missing')
+    const rows: EvaluatorLedgerRow[] = []
+    const original = store.recordEvaluation.bind(store)
+    store.recordEvaluation = (row: EvaluatorLedgerRow): void => {
+      rows.push(row)
+      original(row)
+    }
+    return { rows }
+  }
+
+  function steeredAggregate(sessionId: string) {
+    const aggregate = makeAggregate(sessionId)
+    aggregate.steeringTexts.push('not like that')
+    return aggregate
+  }
+
+  it('promotes the domain lens while ledgering the declined invariant lens', async () => {
+    const home = await freshHome()
+    const skills = join(home, 'skills')
+    const { rows } = captureLedger()
+    const logs: string[] = []
+    const outcome = await evaluateTrackASession(deps(home, dualLlm(dualText(null, DOMAIN_PROPOSAL)), logs), { ...CONFIG, skillsDir: skills }, steeredAggregate('s1'))
+    expect(outcome.decision).toBe('promoted')
+    expect(outcome.draftSlug).toBe('destructive-path-confirm')
+    expect(outcome.drafts).toEqual([
+      { decision: 'promoted', draftSlug: 'destructive-path-confirm' },
+      { decision: 'declined:no-contrast', draftSlug: null },
+    ])
+    expect(rows).toHaveLength(2)
+    expect(rows.map(row => row.decision).sort()).toEqual(['declined:no-contrast', 'promoted'])
+    expect(rows[0]).toMatchObject({ decision: 'promoted', inputTokens: 5, outputTokens: 6 })
+    expect(rows[1]).toMatchObject({ decision: 'declined:no-contrast', inputTokens: 0, outputTokens: 0 })
+    expect(rows.reduce((sum, row) => sum + row.inputTokens, 0)).toBe(5)
+    expect(rows.reduce((sum, row) => sum + row.outputTokens, 0)).toBe(6)
+  })
+
+  it('promotes the invariant lens while ledgering the declined domain lens', async () => {
+    const home = await freshHome()
+    const skills = join(home, 'skills')
+    const { rows } = captureLedger()
+    const outcome = await evaluateTrackASession(deps(home, dualLlm(dualText(INVARIANT_PROPOSAL, { no_contrast: true })), []), { ...CONFIG, skillsDir: skills }, steeredAggregate('s1'))
+    expect(outcome.decision).toBe('promoted')
+    expect(outcome.draftSlug).toBe('general-unverified-delegation')
+    expect(outcome.drafts).toEqual([
+      { decision: 'declined:no-contrast', draftSlug: null },
+      { decision: 'promoted', draftSlug: 'general-unverified-delegation' },
+    ])
+    expect(rows).toHaveLength(2)
+    expect(rows[0]).toMatchObject({ decision: 'declined:no-contrast', inputTokens: 5, outputTokens: 6 })
+    expect(rows[1]).toMatchObject({ decision: 'promoted', inputTokens: 0, outputTokens: 0 })
+  })
+
+  it('declines both lenses with a single declined outcome and two ledger rows', async () => {
+    const home = await freshHome()
+    const skills = join(home, 'skills')
+    const { rows } = captureLedger()
+    const outcome = await evaluateTrackASession(deps(home, dualLlm(dualText(null, null)), []), { ...CONFIG, skillsDir: skills }, steeredAggregate('s1'))
+    expect(outcome).toEqual({
+      decision: 'declined:no-contrast',
+      draftSlug: null,
+      drafts: [
+        { decision: 'declined:no-contrast', draftSlug: null },
+        { decision: 'declined:no-contrast', draftSlug: null },
+      ],
+    })
+    expect(rows).toHaveLength(2)
+    expect(rows.reduce((sum, row) => sum + row.inputTokens, 0)).toBe(5)
+    expect(rows.reduce((sum, row) => sum + row.outputTokens, 0)).toBe(6)
+    expect(store?.countEvaluationsSince(0)).toBe(2)
+  })
+
+  it('fails closed on a garbage lens shape without writing drafts', async () => {
+    const home = await freshHome()
+    const skills = join(home, 'skills')
+    const { rows } = captureLedger()
+    const outcome = await evaluateTrackASession(deps(home, dualLlm(dualText('oops', DOMAIN_PROPOSAL)), []), { ...CONFIG, skillsDir: skills }, steeredAggregate('s1'))
+    expect(outcome).toEqual({ decision: 'llm-error', draftSlug: null })
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ decision: 'llm-error', inputTokens: 0, outputTokens: 0 })
+    expect(existsSync(join(skills, 'destructive-path-confirm'))).toBe(false)
+  })
+
+  it('promotes both lenses domain-first and counts two promotions', async () => {
+    const home = await freshHome()
+    mkdirSync(join(home, 'meta', 'steering'), { recursive: true })
+    writeFileSync(steeringFilePath(home, 's1'), JSON.stringify({ original_task: 'do x', correction: 'do y instead' }))
+    const skills = join(home, 'skills')
+    const logs: string[] = []
+    const outcome = await evaluateTrackASession(deps(home, dualLlm(dualText(INVARIANT_PROPOSAL, DOMAIN_PROPOSAL)), logs), { ...CONFIG, skillsDir: skills }, steeredAggregate('s1'))
+    expect(outcome.decision).toBe('promoted')
+    expect(outcome.draftSlug).toBe('destructive-path-confirm')
+    expect(outcome.drafts).toEqual([
+      { decision: 'promoted', draftSlug: 'destructive-path-confirm' },
+      { decision: 'promoted', draftSlug: 'general-unverified-delegation' },
+    ])
+    expect(existsSync(join(skills, 'destructive-path-confirm', 'SKILL.md'))).toBe(true)
+    expect(existsSync(join(skills, 'general-unverified-delegation', 'SKILL.md'))).toBe(true)
+    expect(store?.countPromotionsSince(0)).toBe(2)
+    expect(store?.countEvaluationsSince(0)).toBe(2)
+    expect(existsSync(steeringFilePath(home, 's1'))).toBe(false)
+    expect(existsSync(join(home, 'meta', 'steering', 'processed', 's1.json'))).toBe(true)
+  })
+
+  it('holds both lenses at probation over the cap and keeps the per-lens slugs', async () => {
+    const home = await freshHome()
+    mkdirSync(join(home, 'meta', 'steering'), { recursive: true })
+    writeFileSync(steeringFilePath(home, 's1'), JSON.stringify({ original_task: 'do x', correction: 'do y instead' }))
+    const skills = join(home, 'skills')
+    const outcome = await evaluateTrackASession(deps(home, dualLlm(dualText(INVARIANT_PROPOSAL, DOMAIN_PROPOSAL)), []), { ...CONFIG, skillsDir: skills, maxPromotionsPerWeek: 0 }, steeredAggregate('s1'))
+    expect(outcome.decision).toBe('draft-written')
+    expect(outcome.draftSlug).toBeNull()
+    expect(outcome.drafts).toEqual([
+      { decision: 'draft-written', draftSlug: 'destructive-path-confirm' },
+      { decision: 'draft-written', draftSlug: 'general-unverified-delegation' },
+    ])
+    expect(existsSync(join(home, 'meta', 'steering', 'processed', 's1.json'))).toBe(true)
+  })
+
+  it('binds the replay budget across lenses: the second lens skips L2 and still promotes', async () => {
+    const home = await freshHome()
+    const skills = join(home, 'skills')
+    const runner = new FakeReplayRunner([replayOutcome({}), replayOutcome({})])
+    const logs: string[] = []
+    const outcome = await evaluateTrackASession(
+      deps(home, scriptedDualLlm(dualText(INVARIANT_PROPOSAL, DOMAIN_PROPOSAL), ['prefer-a', 'prefer-b']), logs, runner),
+      { ...CONFIG, skillsDir: skills, maxReplaysPerDay: 2 },
+      l2Aggregate('s1'),
+    )
+    expect(outcome.decision).toBe('promoted')
+    expect(outcome.draftSlug).toBe('destructive-path-confirm')
+    expect(store?.countReplayRunsSince(0)).toBe(2)
+    expect(store?.countEvaluationsSince(0)).toBe(2)
+    expect(logs.join('\n')).toMatch(/l2 skipped \(replay budget\)/)
   })
 })

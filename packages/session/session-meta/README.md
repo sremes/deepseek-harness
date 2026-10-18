@@ -132,6 +132,29 @@ when the correction restates what the session already did, the proposal
 declines prescription with empty `prescribed` plus `no_contrast: true`
 (NO_ENTRY discipline).
 
+The evaluator emits two lenses in one call: an invariant lens
+(cross-domain agentic deficiency — planning, tool use, delegation,
+verification habits; `trigger_signature` starts with `general-`) and a
+domain lens (task-specific procedure/constraints). The reply is one JSON
+object with keys `invariant` and `domain`; each holds a proposal with the
+schema above and its own `evidence` array (a citation supporting clauses
+in both lenses must appear in each array to count there), or `null` when
+that lens has no content. A lens object with `no_contrast: true` counts as
+declined, like `null`; missing keys count as declined. Anything else
+rejects the whole reply fail-closed.
+
+Each non-declined lens runs the L0–L4 pipeline independently, domain
+first; each declined lens ledgers `declined:no-contrast`. Token accounting
+records the real call usage on the domain (first-processed) row and 0/0 on
+the invariant row, so the pair sums to one call and never double-counts
+spend. Existing caps bind the pair: one evaluator call per day, a shared
+replay budget (a spent budget skips the second lens L2), and two
+promotions from one session count as two. The wrapper keeps
+`{decision, draftSlug}` plus a `drafts` array with the per-lens outcomes
+in processing order: both declined behaves like the single decline; at
+least one promotion yields `promoted` with the first promoted slug;
+otherwise the domain (first) lens decision with a null slug.
+
 The M2.2 effort gate spends evaluator calls where signal exists: trivial
 sessions (few tool calls, early-only steering, no recovery) are skipped;
 explicit persist requests ("remember this", "from now on", ...) always

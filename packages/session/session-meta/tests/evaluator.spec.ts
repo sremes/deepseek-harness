@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { StreamChunk } from '@deepseek-ai/dsh-llm'
 import type { EvaluatorLlm } from '../src/evaluator.ts'
-import { buildEvaluatorPrompt, parseProposal, runEvaluator } from '../src/evaluator.ts'
+import { buildEvaluatorPrompt, parseDualProposals, parseProposal, runDualEvaluator, runEvaluator } from '../src/evaluator.ts'
 import { makeAggregate, textChunks, toolCallChunks, VALID_PROPOSAL_JSON } from './helpers.ts'
 import { projectSession } from '../src/projection.ts'
 
@@ -211,5 +211,108 @@ describe('runEvaluator', () => {
 
   it('honors caller cancellation', async () => {
     await expect(runEvaluator(fakeLlm(textChunks(VALID_PROPOSAL_JSON)), ROUTE, input(), AbortSignal.abort())).rejects.toThrow()
+  })
+})
+
+describe('parseDualProposals', () => {
+  const INVARIANT = {
+    intent: 'Restate delegation targets before running them',
+    forbidden: ['Never delegate a destructive step without restating its target'],
+    prescribed: ['Echo the resolved `path` before delegating the `rm` step'],
+    trigger_signature: 'general-unverified-delegation',
+    trigger_conditions: 'Use when a session delegates tool calls past an uncertain point',
+    platform: 'dsh-headless',
+    evidence: ['step 2: delegated `rm` without restating the target path'],
+  }
+  const DOMAIN = JSON.parse(VALID_PROPOSAL_JSON) as Record<string, unknown>
+  const dual = (invariant: unknown, domain: unknown): string => JSON.stringify({ invariant, domain })
+
+  it('parses a dual reply with independent evidence per lens', () => {
+    const parsed = parseDualProposals(dual(INVARIANT, DOMAIN))
+    expect(parsed.invariant?.triggerSignature).toBe('general-unverified-delegation')
+    expect(parsed.domain?.triggerSignature).toBe('destructive-path-confirm')
+    expect(parsed.invariant?.evidence).toEqual(INVARIANT.evidence)
+    expect(parsed.domain?.evidence).toEqual(DOMAIN.evidence)
+  })
+
+  it('declines missing and null lenses', () => {
+    expect(parseDualProposals('{}')).toEqual({ invariant: null, domain: null })
+    expect(parseDualProposals(dual(null, DOMAIN)).invariant).toBeNull()
+    expect(parseDualProposals(dual(null, DOMAIN)).domain?.triggerSignature).toBe('destructive-path-confirm')
+    expect(parseDualProposals(JSON.stringify({ domain: DOMAIN })).invariant).toBeNull()
+  })
+
+  it('declines lenses with no_contrast true, bare or schema-valid', () => {
+    expect(parseDualProposals(dual({ no_contrast: true }, DOMAIN)).invariant).toBeNull()
+    expect(parseDualProposals(dual({ ...INVARIANT, prescribed: [], no_contrast: true }, DOMAIN)).invariant).toBeNull()
+  })
+
+  it('rejects a legacy single-proposal shape as a dual reply', () => {
+    expect(() => parseDualProposals(VALID_PROPOSAL_JSON)).toThrow(/single proposal/)
+  })
+
+  it('rejects non-object lenses and schema-invalid lens objects', () => {
+    expect(() => parseDualProposals(dual('oops', DOMAIN))).toThrow(/invariant lens must be an object or null/)
+    expect(() => parseDualProposals(dual([], DOMAIN))).toThrow(/invariant lens must be an object or null/)
+    expect(() => parseDualProposals(dual(INVARIANT, 42))).toThrow(/domain lens must be an object or null/)
+    expect(() => parseDualProposals(dual({ intent: 'x' }, DOMAIN))).toThrow(/forbidden/)
+    expect(() => parseDualProposals('{not valid json}')).toThrow(/not valid JSON/)
+    expect(() => parseDualProposals('[1, 2]')).toThrow(/must be a single JSON object/)
+  })
+
+  it('rejects an invariant lens without the general- prefix', () => {
+    expect(() => parseDualProposals(dual({ ...INVARIANT, trigger_signature: 'unverified-delegation' }, DOMAIN))).toThrow(/general-/)
+  })
+
+  it('rejects a lens that omits evidence while the other lens cites its own', () => {
+    const { evidence: _omitted, ...withoutEvidence } = INVARIANT
+    expect(_omitted).toHaveLength(1)
+    expect(() => parseDualProposals(dual(withoutEvidence, DOMAIN))).toThrow(/evidence/)
+  })
+
+  it('accepts a citation duplicated into each lens evidence array', () => {
+    const shared = 'step 1: `rm` called without confirmation flags'
+    const both = {
+      ...INVARIANT,
+      evidence: [...INVARIANT.evidence, shared],
+    }
+    const andDomain = {
+      ...DOMAIN,
+      evidence: [...(DOMAIN.evidence as string[]), shared],
+    }
+    const parsed = parseDualProposals(dual(both, andDomain))
+    expect(parsed.invariant?.evidence).toContain(shared)
+    expect(parsed.domain?.evidence).toContain(shared)
+  })
+
+  it('rejects garbage no_contrast types per lens', () => {
+    expect(() => parseDualProposals(dual({ ...INVARIANT, no_contrast: 'yes' }, DOMAIN))).toThrow(/no_contrast/)
+  })
+
+  it('honors completed=false per lens', () => {
+    const parsed = parseDualProposals(dual(INVARIANT, { ...DOMAIN, prescribed: [] }), false)
+    expect(parsed.domain?.prescribed).toEqual([])
+  })
+})
+
+describe('runDualEvaluator', () => {
+  it('returns both validated lens proposals with measured usage', async () => {
+    const text = JSON.stringify({
+      invariant: {
+        intent: 'Restate delegation targets before running them',
+        forbidden: ['Never delegate a destructive step without restating its target'],
+        prescribed: ['Echo the resolved `path` before delegating the `rm` step'],
+        trigger_signature: 'general-unverified-delegation',
+        trigger_conditions: 'Use when a session delegates tool calls past an uncertain point',
+        platform: 'dsh-headless',
+        evidence: ['step 2: delegated `rm` without restating the target path'],
+      },
+      domain: JSON.parse(VALID_PROPOSAL_JSON) as Record<string, unknown>,
+    })
+    const result = await runDualEvaluator(fakeLlm(textChunks(text, { inputTokens: 7, outputTokens: 8 })), ROUTE, input())
+    expect(result.invariant?.triggerSignature).toBe('general-unverified-delegation')
+    expect(result.domain?.triggerSignature).toBe('destructive-path-confirm')
+    expect(result.inputTokens).toBe(7)
+    expect(result.outputTokens).toBe(8)
   })
 })
