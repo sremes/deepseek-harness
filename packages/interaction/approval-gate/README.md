@@ -50,6 +50,40 @@ Mount the plugin where escalation asks need answers and no human is composed (he
 2. **Allowlist**: whole-command anchored allow for the boring-read-only class (`ls`, `cat`, `echo`, `pwd`, read-only `git` porch) with every shell metacharacter banned → `allowed-once`. Anything piped, redirected, chained, or substituted falls through by construction.
 3. **Judge** (`src/judge.ts`): one fixed-shape chat call over the command plus cwd, target mode, and justification — never a transcript. Schema-clean allow/reject only; every fault degrades to `next()`.
 
+### Outcome contract (every ask ends in exactly one of these)
+
+| Gate path | Returned outcome | Ledger line |
+|---|---|---|
+| Blacklist match | `rejected` | `blacklist` / `rejected` |
+| Allowlist match | `allowed-once` | `allowlist` / `allowed-once` |
+| Judge allow / reject | `allowed-once` / `rejected` | `judge` / outcome + grounds + latency |
+| Anything else (non-bash, unrecoverable command, no key, spent budget, judge fault, internal exception) | downstream `next()` result — with no other answerer mounted, upstream resolves `unavailable` | `delegate` / downstream outcome + reason |
+
+Fail-closed throughout: the only grant is `allowed-once`, the gate never throws out of the waterfall, the judge is bounded by `timeoutMs`, and a ledger fault can never change an outcome (worst case: a missing line).
+
+### Decision ledger
+
+Every ask appends one JSONL line to `$DSH_HOME/meta/approver-decisions.jsonl` (`src/ledger.ts`). The raw command is never stored — only its shape (`bin`, `argc`, `metachars`) — so secrets in commands cannot leak into the file. Delegations record the downstream outcome, which is the lapse signal: `delegate` + `unavailable`/`cancelled` means no human decided.
+
+Two queries this enables (run against any home):
+
+```bash
+# lapse rate: share of delegations nobody answered
+jq -s '[.[] | select(.layer=="delegate")] | (map(select(.outcome=="unavailable" or .outcome=="cancelled")) | length) as $l
+  | "\($l)/\(length) lapsed"' "$DSH_HOME"/meta/approver-decisions.jsonl
+# judge behavior by binary
+jq -s 'group_by(.bin) | map({bin: .[0].bin, n: length, rejected: map(select(.outcome=="rejected")) | length}) | sort_by(-.n)' \
+  "$DSH_HOME"/meta/approver-decisions.jsonl
+```
+
+Judge tuning (approve precision/recall against real clicks) reads this file after a month of traffic — the data collection is the deliverable here, not the thresholds. Loosen the system prompt only with a recorded false-positive rate, never by feel.
+
+### Operating notes (learned the hard way)
+
+- **Desktop app version skew breaks prompt delivery silently.** The gate cannot see the desktop version — keep both sides updated and treat "prompts never arrive" as a version mismatch first, a bug second. No code can handshake across this boundary from inside the harness.
+- **Expired prompts need a human re-submit, not code retry.** Auto-redriving a lapsed human dialog from this plugin would double-prompt (or prompt into the void in headless). The procedure is: watch for the lapse, resubmit the batch. The ledger's lapse rate tells you how often this bites.
+- **Policy `never` short-circuits everything** (upstream service, deterministic). One-shot unattended runs that must not block should set it per session rather than mounting this gate and hoping delegation resolves fast.
+
 <a id="understand-the-implementation"></a>
 ## Understand the implementation
 
@@ -62,6 +96,7 @@ The ask payload carries no command — only the model's justification — so the
 - `src/gate.ts` — pure deterministic layers (blacklist, allowlist, command recovery); unit-tested without cordis.
 - `src/judge.ts` — bounded verdict call over an injectable fetch; every fault degrades to `undefined`.
 - `src/budget.ts` — daily counter file under `$DSH_HOME/meta`; corrupt files reset, spent budgets refuse without writing.
+- `src/ledger.ts` — append-only decision ledger under `$DSH_HOME/meta/approver-decisions.jsonl`; command shapes only, never raw text; never throws.
 - `src/types.ts` — types only.
 
 </details>
@@ -69,7 +104,7 @@ The ask payload carries no command — only the model's justification — so the
 <a id="dev-note"></a>
 ## Dev Note
 
-Coverage expectation is per-file 100%: `tests/gate.spec.ts` pins the deny/allow matrix (including chained sneaks and scoped-delete fall-through), `tests/judge.spec.ts` drives every fault through an injected fetch, `tests/budget.spec.ts` covers the counter lifecycle against tmp homes, and `tests/composition.spec.ts` decides through the real approval service plus a Loader boot of the shipped shape.
+Coverage expectation is per-file 100%: `tests/gate.spec.ts` pins the deny/allow matrix (including chained sneaks and scoped-delete fall-through), `tests/judge.spec.ts` drives every fault through an injected fetch, `tests/budget.spec.ts` covers the counter lifecycle against tmp homes, `tests/ledger.spec.ts` covers classification, ledger fault-swallowing, and wired claim/delegate lines, and `tests/composition.spec.ts` decides through the real approval service plus a Loader boot of the shipped shape.
 
 <a id="further-exploration"></a>
 ## Further Exploration

@@ -24,6 +24,8 @@ import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval'
 import { allowlisted, commandForCall, isBlacklisted } from './gate.ts'
 import { judgeCommand } from './judge.ts'
 import { takeBudget } from './budget.ts'
+import { classifyCommand, recordDecision } from './ledger.ts'
+import type { DelegateReason, DecisionLayer } from './ledger.ts'
 import type { ObservedCall } from './types.ts'
 
 /** Cordis plugin name. */
@@ -110,8 +112,34 @@ export function resolveGateConfig(config: Config): GateConfig {
  */
 export function apply(ctx: Context, config: Config): void {
   const resolved = resolveGateConfig(config)
+  ctx.logger.info(
+    `approval-gate: mounted (judge ${resolved.judgeModel}, budget ${String(resolved.maxCallsPerDay)}/day, home ${resolved.dshHome})`,
+  )
   /** Live tool calls by string call id: the ask payload carries none. */
   const calls = new Map<string, ObservedCall>()
+  /** Delegate a waterfall ask onward and ledger the downstream outcome. */
+  async function delegate(
+    next: () => Promise<ApprovalOutcome>,
+    reason: DelegateReason,
+  ): Promise<ApprovalOutcome> {
+    const outcome = await next()
+    await recordDecision(resolved.dshHome, { layer: 'delegate', outcome, reason })
+    return outcome
+  }
+  /** Record a claimed decision (never a delegation). */
+  async function claim(
+    layer: DecisionLayer,
+    outcome: ApprovalOutcome,
+    shape?: { bin: string; argc: number; metachars: boolean },
+    extra?: { grounds?: string; judgeModel?: string; latencyMs?: number },
+  ): Promise<void> {
+    await recordDecision(resolved.dshHome, {
+      layer,
+      outcome,
+      ...(shape ?? {}),
+      ...(extra ?? {}),
+    })
+  }
   ctx.on('session/event', (_session, event) => {
     const data = (event as { type?: unknown; data?: unknown } | null)?.type === 'tool/call'
       ? (event as { data?: unknown }).data
@@ -132,44 +160,51 @@ export function apply(ctx: Context, config: Config): void {
   })
   ctx.on('approval/request', async (req, next): Promise<ApprovalOutcome> => {
     try {
-      if (req.toolName !== 'bash') return next()
+      if (req.toolName !== 'bash') return delegate(next, 'non-bash')
       const callId = typeof req.callId === 'string' ? req.callId : String(req.callId ?? '')
       const command = commandForCall(calls, callId)
       if (command === undefined) {
         ctx.logger.info(`approval-gate: delegating ${callId} (command unrecoverable)`)
-        return next()
+        return delegate(next, 'unrecoverable')
       }
+      const shape = classifyCommand(command)
       if (isBlacklisted(command)) {
         ctx.logger.info(`approval-gate: rejecting blacklisted command for ${callId}`)
+        await claim('blacklist', 'rejected', shape)
         return 'rejected'
       }
       if (allowlisted(command)) {
         ctx.logger.info(`approval-gate: allowing allowlisted command for ${callId}`)
+        await claim('allowlist', 'allowed-once', shape)
         return 'allowed-once'
       }
       const apiKey = process.env[resolved.apiKeyEnv] ?? ''
       if (apiKey === '') {
         ctx.logger.info(`approval-gate: delegating ${callId} (no ${resolved.apiKeyEnv})`)
-        return next()
+        return delegate(next, 'no-key')
       }
       if (!(await takeBudget(resolved.dshHome, resolved.maxCallsPerDay))) {
         ctx.logger.info(`approval-gate: delegating ${callId} (judge budget spent)`)
-        return next()
+        return delegate(next, 'budget-spent')
       }
       // Session and header exist by the service's own precondition (it read
       // session.seq before dispatch), so this read is total by construction.
       const header = (req.agent as unknown as { session: { header?: { cwd?: unknown } } }).session.header
       const cwd = typeof header?.cwd === 'string' ? header.cwd : ''
       const mode = /escalate sandbox to ([a-z-]+)/.exec(req.reason ?? '')?.[1] ?? 'unknown-mode'
+      const started = Date.now()
       const verdict = await judgeCommand(
         { command: command.slice(0, MAX_JUDGE_COMMAND_CHARS), cwd, requestedMode: mode, justification: req.reason ?? '' },
         { url: resolved.judgeUrl, model: resolved.judgeModel, apiKey, timeoutMs: resolved.timeoutMs },
       )
-      if (verdict === undefined) return next()
+      const latencyMs = Date.now() - started
+      if (verdict === undefined) return delegate(next, 'judge-fault')
       ctx.logger.info(`approval-gate: judge ${verdict.verdict} for ${callId}: ${verdict.grounds}`)
-      return verdict.verdict === 'allow' ? 'allowed-once' : 'rejected'
+      const outcome = verdict.verdict === 'allow' ? 'allowed-once' : 'rejected'
+      await claim('judge', outcome, shape, { grounds: verdict.grounds, judgeModel: resolved.judgeModel, latencyMs })
+      return outcome
     } catch {
-      return next()
+      return delegate(next, 'exception')
     }
   })
 }
