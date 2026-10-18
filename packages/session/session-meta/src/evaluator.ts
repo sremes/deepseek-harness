@@ -65,14 +65,19 @@ export interface EvaluatorResult {
 const EVALUATOR_SYSTEM = [
   'You turn one session into a reusable skill draft.',
   'You receive a JSON state projection (goal, tool steps WITH the arguments the model actually passed, error digests, recovery marks, skills consulted, turn outcome, steering messages) plus the human correction, if any.',
+  'Work in three explicit phases before writing the proposal:',
+  '(a) Reference behavior: state what the session did, step by step from the projection (tools called, arguments passed, order, failures and recoveries).',
+  '(b) Corrected behavior: state what the steering/correction demands instead (the intended procedure or outcome).',
+  '(c) Contrast: name the tool/argument/order delta between (a) and (b) that the prescription rests on; every prescribed and forbidden clause must cite at least one evidence entry grounded in that delta.',
   'Write the procedure that worked, not a narrative of the session:',
   'Ground every clause in the delta between the correction and the observed tool parameters: never invent tools, files, or commands absent from the projection.',
   'A pitfall is a generalizable rule plus one clause of WHY (the mechanism), imperative. Never paste error transcripts, PR numbers, dates, or session-specific identifiers as content.',
   'Do not duplicate what tool schemas already teach (parameter lists, syntax). Do not claim a tool or feature is broken — describe the working pattern instead.',
   'If a step failed and a later same-tool step succeeded (recovered: true), the lesson is the retry pattern (compare args with retryArgs), not the original failure.',
   'If completed is false, the session never verified a working method: write Forbidden-clauses only and leave prescribed empty. Never present an uncompleted attempt as a verified procedure.',
+  'If the correction restates what the session already did — no observable tool/argument/order delta — decline prescription: leave prescribed empty and set no_contrast to true (NO_ENTRY discipline).',
   'Prefer patching what exists: the skillsConsulted list names skills already covering this territory — aim trigger_signature at the one in play rather than inventing a parallel skill. The known_signatures list names drafts already proposed — do not re-propose them.',
-  'Reply with exactly one JSON object, no fences, no prose, with keys: intent (one sentence), forbidden (array of strings, may be empty), prescribed (array of strings; non-empty when completed is true, empty when completed is false), trigger_signature (short kebab-case symptom tag), trigger_conditions (one or two sentences: when a future session should load this skill), platform (e.g. dsh-headless or unknown).',
+  'Reply with exactly one JSON object, no fences, no prose, with keys: intent (one sentence), forbidden (array of strings, may be empty), prescribed (array of strings; non-empty when completed is true, empty when completed is false or when no_contrast is true), trigger_signature (short kebab-case symptom tag), trigger_conditions (one or two sentences: when a future session should load this skill), platform (e.g. dsh-headless or unknown), evidence (array of non-empty strings; each names the step/tool-call supporting one prescribed/forbidden clause, e.g. `step 4: retryArgs added --flag`), no_contrast (optional boolean; true only when no observable delta supports a prescription).',
 ].join('\n')
 
 /**
@@ -103,8 +108,10 @@ export function buildEvaluatorPrompt(input: EvaluatorInput): string {
  * Extract and schema-validate one proposal from model text. Tolerates
  * fenced code blocks; rejects anything that is not a single JSON object
  * with the required shape. `completed` gates the prescription rule (M2.2):
- * only a completed session may prescribe a procedure. Pure: throw sites
- * are all unit-covered.
+ * only a completed session may prescribe a procedure, unless `no_contrast`
+ * marks the NO_ENTRY case (the correction restates observed behavior, so no
+ * prescription is owed). Every clause must cite its contrastive grounding in
+ * `evidence`. Pure: throw sites are all unit-covered.
  */
 export function parseProposal(text: string, completed = true): EvaluatorProposal {
   const json = extractJsonObject(text)
@@ -120,7 +127,11 @@ export function parseProposal(text: string, completed = true): EvaluatorProposal
   if (!isStringArray(proposal.forbidden)) {
     throw new Error('session-meta: evaluator proposal forbidden must be a string array')
   }
-  if (!isStringArray(proposal.prescribed) || (completed && proposal.prescribed.length === 0)) {
+  if (proposal.no_contrast !== undefined && typeof proposal.no_contrast !== 'boolean') {
+    throw new Error('session-meta: evaluator proposal no_contrast must be a boolean when present')
+  }
+  const noContrast = proposal.no_contrast === true
+  if (!isStringArray(proposal.prescribed) || (proposal.prescribed.length === 0 && completed && !noContrast)) {
     throw new Error('session-meta: evaluator proposal prescribed must be a non-empty string array')
   }
   if (typeof proposal.trigger_signature !== 'string' || proposal.trigger_signature.trim() === '') {
@@ -132,6 +143,9 @@ export function parseProposal(text: string, completed = true): EvaluatorProposal
   if (typeof proposal.trigger_conditions !== 'string' || proposal.trigger_conditions.trim() === '') {
     throw new Error('session-meta: evaluator proposal needs non-empty trigger_conditions')
   }
+  if (!isNonEmptyStringArray(proposal.evidence)) {
+    throw new Error('session-meta: evaluator proposal evidence must be a non-empty array of non-empty strings')
+  }
   return {
     intent: proposal.intent,
     forbidden: proposal.forbidden,
@@ -139,7 +153,17 @@ export function parseProposal(text: string, completed = true): EvaluatorProposal
     triggerSignature: proposal.trigger_signature,
     triggerConditions: proposal.trigger_conditions,
     platform: proposal.platform,
+    evidence: proposal.evidence,
+    ...(noContrast ? { noContrast: true as const } : {}),
   }
+}
+
+function isNonEmptyStringArray(value: unknown): value is readonly string[] {
+  return (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.every(entry => typeof entry === 'string' && entry.trim() !== '')
+  )
 }
 
 function isStringArray(value: unknown): value is readonly string[] {

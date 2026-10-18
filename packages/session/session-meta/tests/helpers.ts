@@ -14,6 +14,7 @@ export const VALID_PROPOSAL_JSON = JSON.stringify({
   trigger_signature: 'destructive-path-confirm',
   trigger_conditions: 'Use when a task deletes or overwrites paths outside a scratch directory',
   platform: 'dsh-headless',
+  evidence: ['step 1: `rm` called without confirmation flags', 'step 3: retryArgs added --dry-run before the destructive call'],
 })
 
 /** One text-only model turn carrying `text`, with an optional usage report. */

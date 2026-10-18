@@ -54,7 +54,10 @@ async function freshHome(): Promise<string> {
 
 function deps(home: string, llm: EvaluatorLlm | undefined, logs: string[], runner?: ReplayRunner) {
   if (store === undefined) throw new Error('store missing')
-  return { store, home, llm, replayRunner: runner, now: () => Date.UTC(2026, 8, 4, 12, 0, 0), log: (message: string) => { logs.push(message) } }
+  return {
+    store, home, llm, replayRunner: runner,
+    now: () => Date.UTC(2026, 8, 4, 12, 0, 0), log: (message: string) => { logs.push(message) },
+  }
 }
 
 /** Aggregate carrying steering plus a replayable opening task. */
@@ -136,6 +139,7 @@ function l1FailingLlm(): EvaluatorLlm {
     trigger_signature: 'double-check-habit',
     trigger_conditions: 'Use when a task proceeds past an uncertain point',
     platform: 'dsh-headless',
+    evidence: ['step 1: proceeded past the uncertain point without checking'],
   })
   const chunks = textChunks(vague, { inputTokens: 5, outputTokens: 6 })
   return {
@@ -154,6 +158,7 @@ function l0FailingLlm(): EvaluatorLlm {
     trigger_signature: 'incident-helper-reuse',
     trigger_conditions: 'Use when the incident helper applies',
     platform: 'dsh-headless',
+    evidence: ['step 2: helper called with stale arguments'],
   })
   const chunks = textChunks(bad, { inputTokens: 5, outputTokens: 6 })
   return {
@@ -310,6 +315,29 @@ describe('evaluateTrackASession', () => {
     expect(outcome).toEqual({ decision: 'l1-rejected', draftSlug: null })
     expect(existsSync(join(skills, 'double-check-habit', 'SKILL.md'))).toBe(false)
     expect(logs.join('\n')).toMatch(/L1 self-test/)
+    expect(store?.countEvaluationsSince(0)).toBe(1)
+  })
+
+  it('declines no-contrast proposals before L0 and ledgers the decline, not a veto', async () => {
+    const home = await freshHome()
+    const skills = join(home, 'skills')
+    const aggregate = makeAggregate('s1')
+    aggregate.steeringTexts.push('not like that')
+    const declined = {
+      ...JSON.parse(VALID_PROPOSAL_JSON) as Record<string, unknown>,
+      prescribed: [],
+      no_contrast: true,
+    }
+    const declining: EvaluatorLlm = {
+      async *stream(): AsyncIterable<StreamChunk> {
+        yield* textChunks(JSON.stringify(declined), { inputTokens: 5, outputTokens: 6 })
+      },
+    }
+    const logs: string[] = []
+    const outcome = await evaluateTrackASession(deps(home, declining, logs), { ...CONFIG, skillsDir: skills }, aggregate)
+    expect(outcome).toEqual({ decision: 'declined:no-contrast', draftSlug: null })
+    expect(existsSync(join(skills, 'destructive-path-confirm', 'SKILL.md'))).toBe(false)
+    expect(logs.join('\n')).toMatch(/declined prescription/)
     expect(store?.countEvaluationsSince(0)).toBe(1)
   })
 

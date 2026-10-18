@@ -123,7 +123,14 @@ Proposals require `trigger_conditions`, rendered to the draft's `whenToUse`.
 Non-completed sessions yield Forbidden-clauses only (never a prescribed
 procedure for an unverified attempt). Prompt rules: procedure over narrative,
 pitfall = rule + one clause of WHY, no incident identifiers, no tool-schema
-duplication, no broken-tool claims.
+duplication, no broken-tool claims. The prompt works in three explicit phases —
+(a) reference behavior from the steps, (b) corrected behavior from the
+steering, (c) the tool/argument/order contrast the prescription rests on.
+Every prescribed/forbidden clause cites its grounding in required `evidence`
+(one step/tool-call citation per clause, e.g. `step 4: retryArgs added --flag`);
+when the correction restates what the session already did, the proposal
+declines prescription with empty `prescribed` plus `no_contrast: true`
+(NO_ENTRY discipline).
 
 The M2.2 effort gate spends evaluator calls where signal exists: trivial
 sessions (few tool calls, early-only steering, no recovery) are skipped;

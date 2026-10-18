@@ -161,6 +161,17 @@ export interface EvaluatorProposal {
   readonly platform: string
   /** When the skill applies; rendered to `whenToUse` (M2.1 retrieval). */
   readonly triggerConditions: string
+  /**
+   * Contrastive grounding: one entry per prescribed/forbidden clause, each
+   * naming the step/tool-call it rests on (e.g. `step 4: retryArgs added --flag`).
+   */
+  readonly evidence: readonly string[]
+  /**
+   * NO_ENTRY discipline: true only when the correction restates what the
+   * session already did, so no observable delta supports a prescription and
+   * `prescribed` stays empty.
+   */
+  readonly noContrast?: boolean | undefined
 }
 
 /** A written pipeline-gated skill draft. */

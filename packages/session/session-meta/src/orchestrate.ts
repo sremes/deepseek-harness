@@ -179,6 +179,14 @@ export async function evaluateTrackASession(
     deps.log(`session-meta: evaluator failed for ${aggregate.sessionId}: ${String(error)}`)
     return { decision: 'llm-error', draftSlug: null }
   }
+  // NO_ENTRY discipline: the evaluator found no observable contrast, so no
+  // draft is owed. Decline explicitly here — before L0/L1 — so correct
+  // declines never masquerade as contract failures in the veto metrics.
+  if (result.proposal.noContrast === true) {
+    deps.store.recordEvaluation({ ts: now, sessionId: aggregate.sessionId, inputTokens: result.inputTokens, outputTokens: result.outputTokens, decision: 'declined:no-contrast', draftSlug: null })
+    deps.log(`session-meta: evaluator declined prescription for ${aggregate.sessionId} (no observable contrast)`)
+    return { decision: 'declined:no-contrast', draftSlug: null }
+  }
   mkdirSync(config.skillsDir, { recursive: true })
   const provenance = { sessions: [aggregate.sessionId], mode: aggregate.origin ?? 'unknown' } as const
   // M3 L0: cheapest layer first — render in memory and veto before any file

@@ -104,10 +104,61 @@ describe('parseProposal', () => {
   })
 
   it('allows empty prescribed only for uncompleted sessions', () => {
-    const base = { intent: 'x', forbidden: ['f'], trigger_signature: 't', trigger_conditions: 'c', platform: 'p' }
+    const base = {
+      intent: 'x',
+      forbidden: ['f'],
+      trigger_signature: 't',
+      trigger_conditions: 'c',
+      platform: 'p',
+      evidence: ['step 1: `rm` called without confirmation flags'],
+    }
     expect(() => parseProposal(JSON.stringify({ ...base, prescribed: [] }))).toThrow(/prescribed must be a non-empty/)
     expect(parseProposal(JSON.stringify({ ...base, prescribed: [] }), false).prescribed).toEqual([])
     expect(parseProposal(JSON.stringify({ ...base, prescribed: ['p'] }), false).prescribed).toEqual(['p'])
+  })
+})
+
+describe('parseProposal evidence and no_contrast', () => {
+  const base = {
+    intent: 'Confirm destructive paths before running them',
+    forbidden: ['Never run rm -rf on unconfirmed paths'],
+    prescribed: ['Echo the resolved `path` and wait for confirmation'],
+    trigger_signature: 'destructive-path-confirm',
+    trigger_conditions: 'Use when a task deletes or overwrites paths outside a scratch directory',
+    platform: 'dsh-headless',
+  }
+  const evidence = ['step 1: `rm` called without confirmation flags', 'step 3: retryArgs added --dry-run']
+
+  it('accepts a proposal with step-cited evidence', () => {
+    const proposal = parseProposal(JSON.stringify({ ...base, evidence }))
+    expect(proposal.evidence).toEqual(evidence)
+    expect(proposal.noContrast).toBeUndefined()
+  })
+
+  it('rejects missing evidence', () => {
+    expect(() => parseProposal(JSON.stringify(base))).toThrow(/evidence/)
+  })
+
+  it('rejects empty evidence entries', () => {
+    expect(() => parseProposal(JSON.stringify({ ...base, evidence: [] }))).toThrow(/evidence/)
+    expect(() => parseProposal(JSON.stringify({ ...base, evidence: [''] }))).toThrow(/evidence/)
+    expect(() => parseProposal(JSON.stringify({ ...base, evidence: [evidence.join('; '), '  '] }))).toThrow(/evidence/)
+    expect(() => parseProposal(JSON.stringify({ ...base, evidence: ['step 1: `rm` called', 7] }))).toThrow(/evidence/)
+  })
+
+  it('rejects empty prescribed without no_contrast', () => {
+    expect(() => parseProposal(JSON.stringify({ ...base, prescribed: [], evidence }))).toThrow(/prescribed must be a non-empty/)
+  })
+
+  it('accepts empty prescribed with no_contrast true', () => {
+    const proposal = parseProposal(JSON.stringify({ ...base, prescribed: [], evidence, no_contrast: true }))
+    expect(proposal.prescribed).toEqual([])
+    expect(proposal.noContrast).toBe(true)
+  })
+
+  it('rejects garbage no_contrast types', () => {
+    expect(() => parseProposal(JSON.stringify({ ...base, evidence, no_contrast: 'yes' }))).toThrow(/no_contrast/)
+    expect(() => parseProposal(JSON.stringify({ ...base, evidence, no_contrast: 1 }))).toThrow(/no_contrast/)
   })
 })
 
