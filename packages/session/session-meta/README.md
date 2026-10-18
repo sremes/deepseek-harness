@@ -211,8 +211,8 @@ else throws instead of migrating.
 - `src/compose.ts` — selective per-clause composition: incumbent-clause union with exact-trimmed-match dedupe plus confounded-preferring per-clause evidence.
 - `src/driver.ts` — post-hoc steering driver (`drivePendingSteering`): pending records through the same pipeline after session exit.
 - `src/steering.ts` — headless correction-record ingest.
-- `src/writer.ts` — gated `SKILL.md` drafts (`disable-model-invocation`, `whenToUse`).
-- `src/l0.ts` — M3 L0 contract gate: deterministic veto over a rendered draft (frontmatter, metadata, sections, mechanizable bans); the orchestrator ledgers `l0-rejected` without writing.
+- `src/writer.ts` — gated `SKILL.md` drafts (`disable-model-invocation`, `whenToUse`). Draft metadata carries EXPERIENCE.md provenance derived only from the proposal plus the provenance arg: `cue` is the proposal's `triggerConditions` verbatim, `lesson` is the proposal's `intent` verbatim, and `evidence` is the proposal's `evidence` entries plus one `session:<id>` entry per provenance session, JSON-encoded. Composition rewrites clauses only, so these keys survive it byte-identical.
+- `src/l0.ts` — M3 L0 contract gate: deterministic veto over a rendered draft (frontmatter, metadata including non-empty `cue`/`lesson`/`evidence`, sections, mechanizable bans); the orchestrator ledgers `l0-rejected` without writing.
  - `src/l1.ts` — M3 L1 self-test gate: a Prescribed clause is checkable when it names a session tool or quotes inline `code`; the orchestrator ledgers `l1-rejected` without writing.
 - `src/redact.ts` — secret scrubbing and bounds.
 - `src/store.ts` — `node:sqlite` meta store (`MetaStore`, `META_SCHEMA_VERSION`) plus the M3 skill registry (promotion lifecycle) and `clause_evidence` (per-clause composition verdicts).

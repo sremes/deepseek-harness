@@ -44,7 +44,14 @@ export function slugify(text: string): string {
   return slug === '' ? 'skill-draft' : slug
 }
 
-/** Render one gated `SKILL.md` draft. Pure: byte-exact output, unit-covered. */
+/** Render one gated `SKILL.md` draft. Pure: byte-exact output, unit-covered.
+ *
+ * Frontmatter metadata carries EXPERIENCE.md provenance derived only from
+ * the proposal plus the provenance arg: `cue` is the proposal's
+ * `triggerConditions` verbatim, `lesson` is the proposal's `intent`
+ * verbatim, and `evidence` is the proposal's `evidence` entries plus one
+ * `session:<id>` entry per provenance session, JSON-encoded.
+ */
 export function renderDraft(proposal: EvaluatorProposal, provenance: DraftProvenance, slug: string): string {
   const description = proposal.intent.replace(/\s+/g, ' ').trim().slice(0, MAX_DRAFT_DESCRIPTION_CHARS)
   const forbidden = proposal.forbidden.map(clause => `- ${clause}`).join('\n')
@@ -61,6 +68,9 @@ export function renderDraft(proposal: EvaluatorProposal, provenance: DraftProven
     '  version: 1',
     `  trigger_signature: ${proposal.triggerSignature}`,
     `  provenance: {sessions: [${provenance.sessions.map(id => JSON.stringify(id)).join(', ')}], mode: ${JSON.stringify(provenance.mode)}}`,
+    `  cue: ${proposal.triggerConditions}`,
+    `  lesson: ${proposal.intent}`,
+    `  evidence: ${JSON.stringify([...proposal.evidence, ...provenance.sessions.map(id => `session:${id}`)])}`,
     '---',
     '',
     `# ${proposal.intent}`,
@@ -117,7 +127,7 @@ export function promoteDraftFile(dir: string): void {
   }
   const flipped = lines
     .filter(line => line !== DISABLE_MODEL_INVOCATION_LINE)
-    .map(line => {
+    .map((line) => {
       const version = line.match(/^(\s*version:\s*)(\d+)(\s*)$/)
       if (version !== null) return `${version[1]}${Number(version[2]) + 1}${version[3]}`
       return line

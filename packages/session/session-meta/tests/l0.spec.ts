@@ -10,6 +10,7 @@ const BASE: EvaluatorProposal = {
   triggerSignature: 'destructive-path-confirm',
   triggerConditions: 'Use when a task deletes or overwrites paths outside a scratch directory',
   platform: 'dsh-headless',
+  evidence: ['step 1: `rm` called without confirmation flags'],
 }
 
 function draftFor(proposal: EvaluatorProposal): string {
@@ -113,6 +114,42 @@ describe('evaluateL0 frontmatter', () => {
     const result = evaluateL0(VALID.replace(/^  provenance: .*$/m, ''))
     expect(result.pass).toBe(false)
     expect(result.violations).toEqual(expect.arrayContaining([expect.stringContaining('"provenance"')]))
+  })
+
+  it('rejects a missing cue', () => {
+    const result = evaluateL0(VALID.replace(/^  cue: .*$/m, ''))
+    expect(result.pass).toBe(false)
+    expect(result.violations).toEqual(expect.arrayContaining([expect.stringContaining('"cue"')]))
+  })
+
+  it('rejects a missing lesson', () => {
+    const result = evaluateL0(VALID.replace(/^  lesson: .*$/m, ''))
+    expect(result.pass).toBe(false)
+    expect(result.violations).toEqual(expect.arrayContaining([expect.stringContaining('"lesson"')]))
+  })
+
+  it('rejects a missing evidence', () => {
+    const result = evaluateL0(VALID.replace(/^  evidence: .*$/m, ''))
+    expect(result.pass).toBe(false)
+    expect(result.violations).toEqual(expect.arrayContaining([expect.stringContaining('"evidence"')]))
+  })
+
+  it('rejects an empty cue', () => {
+    const result = evaluateL0(VALID.replace(/^  cue: .*$/m, '  cue: '))
+    expect(result.pass).toBe(false)
+    expect(result.violations).toEqual(expect.arrayContaining([expect.stringContaining('"cue"')]))
+  })
+
+  it('rejects an empty lesson', () => {
+    const result = evaluateL0(VALID.replace(/^  lesson: .*$/m, '  lesson: '))
+    expect(result.pass).toBe(false)
+    expect(result.violations).toEqual(expect.arrayContaining([expect.stringContaining('"lesson"')]))
+  })
+
+  it('rejects an empty evidence', () => {
+    const result = evaluateL0(VALID.replace(/^  evidence: .*$/m, '  evidence: '))
+    expect(result.pass).toBe(false)
+    expect(result.violations).toEqual(expect.arrayContaining([expect.stringContaining('"evidence"')]))
   })
 })
 

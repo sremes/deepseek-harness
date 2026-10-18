@@ -157,6 +157,15 @@ export function evaluateL0(draftText: string): { pass: boolean; violations: stri
     if ((metadata.get('provenance') ?? '').trim() === '') {
       violations.push('metadata: missing required field "provenance"')
     }
+    if ((metadata.get('cue') ?? '').trim() === '') {
+      violations.push('metadata: missing required field "cue"')
+    }
+    if ((metadata.get('lesson') ?? '').trim() === '') {
+      violations.push('metadata: missing required field "lesson"')
+    }
+    if ((metadata.get('evidence') ?? '').trim() === '') {
+      violations.push('metadata: missing required field "evidence"')
+    }
   }
   const sections = parseBodySections(body)
   if (!sections.hasForbidden) {

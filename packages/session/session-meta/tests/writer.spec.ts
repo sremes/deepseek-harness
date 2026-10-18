@@ -13,6 +13,7 @@ const PROPOSAL: EvaluatorProposal = {
   triggerSignature: 'Destructive Path Confirm!',
   triggerConditions: 'Use when a task deletes or overwrites paths outside a scratch directory',
   platform: 'dsh-headless',
+  evidence: ['step 1: `rm` called without confirmation flags'],
 }
 
 let root: string | undefined
@@ -46,6 +47,28 @@ describe('renderDraft', () => {
     expect(text).toContain('provenance: {sessions: ["s1"], mode: "headless"}')
     expect(text).toContain('- Never run rm -rf on unconfirmed paths')
     expect(text).toContain('_Platform: dsh-headless.')
+  })
+
+  it('carries cue/lesson/evidence derived from the proposal and provenance sessions', () => {
+    const proposal: EvaluatorProposal = {
+      ...PROPOSAL,
+      intent: 'Confirm destructive paths before running them',
+      triggerConditions: 'Use when a task deletes or overwrites paths outside a scratch directory',
+      evidence: ['step 4: retryArgs added --flag'],
+    }
+    const text = renderDraft(proposal, { sessions: ['abc123'], mode: 'headless' }, 'destructive-path-confirm')
+    expect(text).toContain(`cue: ${proposal.triggerConditions}`)
+    expect(text).toContain(`lesson: ${proposal.intent}`)
+    expect(text).toContain(`evidence: ${JSON.stringify(['step 4: retryArgs added --flag', 'session:abc123'])}`)
+  })
+
+  it('renders evidence without session entries when provenance carries no sessions', () => {
+    const text = renderDraft(
+      { ...PROPOSAL, evidence: ['step 4: retryArgs added --flag'] },
+      { sessions: [], mode: 'cli' },
+      'slug',
+    )
+    expect(text).toContain(`evidence: ${JSON.stringify(['step 4: retryArgs added --flag'])}`)
   })
 
   it('marks empty forbidden lists explicitly', () => {
