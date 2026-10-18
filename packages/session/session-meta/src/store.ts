@@ -8,8 +8,9 @@
  * budget ledger; schema v5 adds the skill-sessions history; schema v6 adds
  * the promotions ledger; schema v7 adds the Track B spec-runner ledger;
  * schema v8 persists per-session aggregates for the post-hoc steering driver;
- * schema v9 adds per-clause composition evidence.
- * v1/v2/v3/v4/v5/v6/v7/v8
+ * schema v9 adds per-clause composition evidence; schema v10 adds the
+ * trigger-signature invalidation ledger (manual upstream-fix signal).
+ * v1/v2/v3/v4/v5/v6/v7/v8/v9
  * databases migrate forward automatically (new tables only — no row
  * rewrites). Anything else throws instead of migrating (repo stance).
  *
@@ -21,8 +22,8 @@ import { dirname } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import type { EvaluatorLedgerRow, MetaRoute, MetaSessionRow, SessionAggregate, SkillRegistryRow, SkillStatus, TrackBRunRow } from './types.ts'
 
-/** On-disk schema version; v1/v2/v3/v4/v5/v6/v7/v8 migrate to v9, anything else throws. */
-export const META_SCHEMA_VERSION = 9
+/** On-disk schema version; v1/v2/v3/v4/v5/v6/v7/v8/v9 migrate to v10, anything else throws. */
+export const META_SCHEMA_VERSION = 10
 
 /** Pipeline-promoted skills start here (probation — one regression archives). */
 export const SKILL_PROBATION_CONFIDENCE = 0.4
@@ -110,7 +111,39 @@ CREATE TABLE IF NOT EXISTS clause_evidence(
   ts INTEGER NOT NULL,
   PRIMARY KEY(signature, clause)
 );
+CREATE TABLE IF NOT EXISTS invalidations(
+  signature TEXT PRIMARY KEY,
+  reason TEXT NOT NULL,
+  ts INTEGER NOT NULL
+);
 `
+
+/** Persisted `invalidations` row: a retired trigger signature plus its cause. */
+export interface InvalidationRow {
+  readonly signature: string
+  readonly reason: string
+  readonly ts: number
+}
+
+/** Bounded stats snapshot over the meta store (the M5 cost-telemetry report). */
+export interface MetaStats {
+  /** Session count per triage route. */
+  readonly sessionsByRoute: Record<MetaRoute, number>
+  /** Evaluator ledger count per decision string. */
+  readonly evaluationsByDecision: Record<string, number>
+  /** Promotion-ledger rows in the trailing 7-day window. */
+  readonly promotionsByWeek: number
+  /** Replay-run rows in the trailing 24-hour window. */
+  readonly replayRunsByDay: number
+  /** Total invalidation-ledger rows. */
+  readonly invalidations: number
+}
+
+/** Trailing window for the weekly promotion count (matches the blast cap). */
+const STATS_WEEK_MS = 7 * 24 * 3600 * 1000
+
+/** Trailing window for the daily replay-run count. */
+const STATS_DAY_MS = 24 * 3600 * 1000
 
 /** Persisted `clause_evidence` row: per-clause attribution for composed skills. */
 export interface ClauseEvidenceRow {
@@ -154,9 +187,11 @@ export class MetaStore {
     const version = this.db.prepare('PRAGMA user_version').get() as { user_version: number }
     if (version.user_version === 0) {
       this.db.exec(`PRAGMA user_version = ${META_SCHEMA_VERSION}`)
-    } else if (version.user_version >= 1 && version.user_version <= 8) {
-      // v1/v2/v3/v4/v5/v6/v7/v8 → v9 are additive only (evaluator_ledger, skill_registry,
-      // replay_runs, skill_sessions, promotions, trackb_runs, meta_aggregates, clause_evidence, created above): stamp forward.
+    } else if (version.user_version >= 1 && version.user_version <= 9) {
+      // v1..v9 → v10 are additive only (evaluator_ledger, skill_registry,
+      // replay_runs, skill_sessions, promotions, trackb_runs,
+      // meta_aggregates, clause_evidence, invalidations, created above):
+      // stamp forward.
       this.db.exec(`PRAGMA user_version = ${META_SCHEMA_VERSION}`)
     } else if (version.user_version !== META_SCHEMA_VERSION) {
       const seen = version.user_version
@@ -201,6 +236,63 @@ export class MetaStore {
       this.db.exec('ROLLBACK')
       throw error
     }
+  }
+
+  /**
+   * Retire one trigger signature: ledger the invalidation, then drive the
+   * existing archive path for a live/probation registry row (confidence to
+   * the floor via `applyConfidenceDelta`, which pins and archives — the
+   * same call the curator sweep uses). Directory removal stays with the
+   * caller, which owns `skillsDir` (it mirrors the curator removal).
+   *
+   * @param signature - The retired `trigger_signature`.
+   * @param reason - Human-supplied cause (non-empty; validated at ingest).
+   * @param now - Invalidation timestamp (UTC millis).
+   * @returns No return value; unknown signatures only ledger the block.
+   */
+  invalidateSignature(signature: string, reason: string, now: number): void {
+    this.db.prepare(
+      'INSERT INTO invalidations(signature, reason, ts) VALUES(?, ?, ?) ON CONFLICT(signature) DO UPDATE SET reason=excluded.reason, ts=excluded.ts',
+    ).run(signature, reason, now)
+    const current = this.getSkill(signature)
+    if (current === undefined || current.status === 'archived') return
+    this.applyConfidenceDelta(signature, -current.confidence)
+  }
+
+  /**
+   * Whether a trigger signature was retired by an invalidation record.
+   *
+   * @param signature - The candidate `trigger_signature`.
+   * @returns the ledgered reason, or `undefined` when never invalidated.
+   */
+  isInvalidated(signature: string): string | undefined {
+    const row = this.db.prepare(
+      'SELECT reason FROM invalidations WHERE signature = ?',
+    ).get(signature) as { reason: string } | undefined
+    return row?.reason
+  }
+
+  /**
+   * Snapshot bounded store stats for the cost-telemetry report: invocation
+   * counts times known per-call cost beat an unverifiable dollar estimate.
+   * Plain JSON-able, bounded by construction (fixed keys plus one row per
+   * distinct evaluator decision string).
+   *
+   * @returns the stats snapshot; windows anchor on the call time.
+   */
+  getStats(): MetaStats {
+    const sessionsByRoute = this.routeHistogram()
+    const evaluationsByDecision: Record<string, number> = {}
+    const decisionRows = this.db.prepare(
+      'SELECT decision, COUNT(*) AS n FROM evaluator_ledger GROUP BY decision',
+    ).all() as Array<{ decision: string; n: number }>
+    for (const row of decisionRows) evaluationsByDecision[row.decision] = row.n
+    const weekStart = Date.now() - STATS_WEEK_MS
+    const dayStart = Date.now() - STATS_DAY_MS
+    const promotionsByWeek = this.countPromotionsSince(weekStart)
+    const replayRunsByDay = this.countReplayRunsSince(dayStart)
+    const invalidRow = this.db.prepare('SELECT COUNT(*) AS n FROM invalidations').get() as { n: number }
+    return { sessionsByRoute, evaluationsByDecision, promotionsByWeek, replayRunsByDay, invalidations: invalidRow.n }
   }
 
   /** Read one session row by id. */

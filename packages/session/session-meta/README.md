@@ -187,6 +187,37 @@ cron headless profile): the first finalized session queues one drive through
 the shared settle drain one-shot hosts await. Shipped profiles and
 interactive hosts leave it `false` (default).
 
+A manual upstream fix retires a skill through a drop-in record:
+`$DSH_HOME/meta/invalidate/<trigger-signature>.json` with
+`{reason: <non-empty string>}`. Every finalize drains the directory: valid
+records ledger the invalidation (live/probation rows archive at the
+confidence floor and their skill directory is removed) and move to
+`processed/`; invalid JSON and invalid records move to `processed/` with a
+`.bad` suffix and a log line, mirroring the steering-file error handling. A
+proposal under an invalidated signature is declined after the evaluator reply
+and before L0 with decision `invalidated:<reason-slug>` (full reason in the
+log line, short slug in the ledgered decision) — no draft is written and no
+L1+ spend follows. This is distinct from `declined:no-contrast` (nothing to
+learn): invalidation means learned, then superseded.
+
+The M5 report primitive is `MetaStore.getStats()`:
+
+```json
+{
+  "sessionsByRoute": { "track_a": 12, "track_b": 3, "no_op": 40 },
+  "evaluationsByDecision": { "promoted": 2, "l0-rejected": 1 },
+  "promotionsByWeek": 2,
+  "replayRunsByDay": 4,
+  "invalidations": 1
+}
+```
+
+`promotionsByWeek` covers the trailing 7 days, `replayRunsByDay` the trailing
+24 hours. The boot drive logs one `session-meta: stats ...` info line with
+this snapshot — the nightly/background entry point both profiles share, never
+per session. This is the cost telemetry: invocation counts times known
+per-call cost beat an unverifiable dollar estimate.
+
 <a id="understand-the-implementation"></a>
 ## Understand the implementation
 
@@ -207,7 +238,7 @@ else throws instead of migrating.
 - `src/evaluator.ts` — budget-capped Flash call over Σ; schema-validated proposals.
 - `src/judge.ts` — M3 L4-lite blinded order-swapped pairwise judge; harm veto only, fails closed.
 - `src/replay.ts` — M3 L2/L3 replay-driver seam: outcome data, runner interface, scripted fake, harm veto, judge summary.
-- `src/orchestrate.ts` — offline loop driver (budget, steering files, effort gate, L0/L1 gates, L2 motivating-task replay gate, L3 regression-sample gate, gated drafts, signature-collision composition).
+- `src/orchestrate.ts` — offline loop driver (budget, steering files, invalidation drop-ins, effort gate, L0/L1 gates, L2 motivating-task replay gate, L3 regression-sample gate, gated drafts, signature-collision composition, invalidated-signature pre-L0 veto).
 - `src/compose.ts` — selective per-clause composition: incumbent-clause union with exact-trimmed-match dedupe plus confounded-preferring per-clause evidence.
 - `src/driver.ts` — post-hoc steering driver (`drivePendingSteering`): pending records through the same pipeline after session exit.
 - `src/steering.ts` — headless correction-record ingest.
@@ -215,7 +246,7 @@ else throws instead of migrating.
 - `src/l0.ts` — M3 L0 contract gate: deterministic veto over a rendered draft (frontmatter, metadata including non-empty `cue`/`lesson`/`evidence`, sections, mechanizable bans); the orchestrator ledgers `l0-rejected` without writing.
  - `src/l1.ts` — M3 L1 self-test gate: a Prescribed clause is checkable when it names a session tool or quotes inline `code`; the orchestrator ledgers `l1-rejected` without writing.
 - `src/redact.ts` — secret scrubbing and bounds.
-- `src/store.ts` — `node:sqlite` meta store (`MetaStore`, `META_SCHEMA_VERSION`) plus the M3 skill registry (promotion lifecycle) and `clause_evidence` (per-clause composition verdicts).
+- `src/store.ts` — `node:sqlite` meta store (`MetaStore`, `META_SCHEMA_VERSION`) plus the M3 skill registry (promotion lifecycle), `clause_evidence` (per-clause composition verdicts), `invalidations` (retired trigger signatures), and `getStats()` (route/decision/promotion/replay/invalidation counts).
 - `src/curator.ts` — M3 post-promotion lifecycle signals: per-session applied/confidence moves (silence-neutral) plus the 90-day decay sweep, wired from finalize.
 - `src/trackb.ts` — M4 Track B reproduction emitter: parser-class crashes become characterization specs under `.dsh/reproductions/` (pass while the crash reproduces, fail if upstream ever accepts the payload), everything else lands in the `breakages.jsonl` upstream-PR register. The M4 spec runner executes each emitted spec once under the resolved Vitest binary and ledgers the exit code in `trackb_runs` (no curator hook reads it — invalidation stays reviewer-side until M5).
 - `src/types.ts` — types only.

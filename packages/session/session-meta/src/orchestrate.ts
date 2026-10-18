@@ -139,6 +139,122 @@ export function loadSteeringFile(home: string, sessionId: string, log: (message:
 }
 
 /**
+ * Directory holding drop-in trigger-signature invalidation records
+ * (`$DSH_HOME/meta/invalidate/<signature>.json`): a manual upstream-fix
+ * signal that retires a skill and blocks its re-promotion.
+ *
+ * @param home - resolved harness home.
+ */
+export function invalidationDir(home: string): string {
+  return join(home, 'meta', 'invalidate')
+}
+
+/**
+ * Directory holding consumed invalidation records.
+ *
+ * @param home - resolved harness home.
+ */
+export function processedInvalidationDir(home: string): string {
+  return join(home, 'meta', 'invalidate', 'processed')
+}
+
+/** Raw invalidation file shape; validated field by field, never cast blindly. */
+interface InvalidationFileRaw {
+  readonly reason?: unknown
+}
+
+/**
+ * Validate one parsed invalidation file. Pure: every branch is unit-testable
+ * without a filesystem. Mirrors `parseSteeringFile` (non-empty `reason`).
+ *
+ * @param signature - retired trigger signature; must match the file name.
+ * @param raw - parsed JSON value from the invalidation file.
+ * @returns the validated reason.
+ */
+export function parseInvalidationFile(signature: string, raw: unknown): string {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    throw new Error(`session-meta: invalidation record for ${signature} must be a JSON object`)
+  }
+  const reason = (raw as InvalidationFileRaw).reason
+  if (typeof reason !== 'string' || reason.trim().length === 0) {
+    throw new Error(`session-meta: invalidation record for ${signature} needs a non-empty reason`)
+  }
+  return reason
+}
+
+/**
+ * Drain drop-in invalidation records at finalize: valid records retire
+ * their signature (live/probation rows archive) and move to `processed/`;
+ * invalid JSON and invalid records move to `processed/` with a `.bad`
+ * suffix. Mirrors the steering-file error handling — a broken record logs
+ * and never fails the session pipeline.
+ *
+ * @param home - resolved harness home holding `meta/invalidate/`.
+ * @param store - invalidation-ledger owner.
+ * @param skillsDir - skill-draft root holding one directory per slug.
+ * @param now - invalidation timestamp (UTC millis).
+ * @param log - sink for ingest notes; the curator removal message is reused verbatim.
+ * @returns No return value; every pending record is consumed or left for the next drive.
+ */
+export function drainInvalidationRecords(
+  home: string,
+  store: MetaStore,
+  skillsDir: string,
+  now: number,
+  log: (message: string) => void,
+): void {
+  let entries: Array<{ name: string; isFile: boolean }>
+  try {
+    entries = readdirSync(invalidationDir(home), { withFileTypes: true })
+      .map(entry => ({ name: entry.name, isFile: entry.isFile() }))
+  } catch {
+    return
+  }
+  const pending = entries
+    .filter(entry => entry.isFile && entry.name.endsWith('.json'))
+    .map(entry => entry.name)
+    .sort()
+  for (const name of pending) {
+    const signature = name.slice(0, -'.json'.length)
+    if (signature.length === 0) {
+      log('session-meta: ignoring unnamed invalidation record')
+      continue
+    }
+    const source = join(invalidationDir(home), name)
+    let raw: unknown
+    try {
+      raw = JSON.parse(readFileSync(source, 'utf8'))
+    } catch {
+      mkdirSync(processedInvalidationDir(home), { recursive: true })
+      renameSync(source, join(processedInvalidationDir(home), `${name}.bad`))
+      log(`session-meta: ignoring invalid JSON invalidation record for ${signature}`)
+      continue
+    }
+    let reason: string
+    try {
+      reason = parseInvalidationFile(signature, raw)
+    } catch (error) {
+      mkdirSync(processedInvalidationDir(home), { recursive: true })
+      renameSync(source, join(processedInvalidationDir(home), `${name}.bad`))
+      log(`session-meta: ignoring invalid invalidation record for ${signature}: ${String(error)}`)
+      continue
+    }
+    store.invalidateSignature(signature, reason, now)
+    const archived = store.getSkill(signature)
+    if (archived?.status === 'archived') {
+      try {
+        rmSync(join(skillsDir, archived.slug), { recursive: true, force: true })
+      } catch (error) {
+        log(`session-meta: failed to remove archived skill dir ${archived.slug}: ${String(error)}`)
+      }
+    }
+    mkdirSync(processedInvalidationDir(home), { recursive: true })
+    renameSync(source, join(processedInvalidationDir(home), name))
+    log(`session-meta: invalidated trigger signature ${signature}: ${reason}`)
+  }
+}
+
+/**
  * Evaluate one finished steered session and write a gated draft.
  * Fire-and-forget from flush/dispose; failures resolve to ledgered
  * decisions, never rejections.
@@ -262,6 +378,21 @@ async function runLensPipeline(
   now: number,
   fileRecord: SteeringRecord | undefined,
 ): Promise<EvaluationOutcome> {
+  // M5 invalidation: a retired trigger signature never re-promotes. Checked
+  // after the evaluator reply and before L0 — no draft is written and no
+  // L1+ spend follows. Distinct from `declined:no-contrast` (nothing to
+  // learn): this means learned, then superseded. The full reason stays in
+  // the log line; the ledgered decision keeps the short `invalidated:<slug>`.
+  const invalidReason = deps.store.isInvalidated(proposal.triggerSignature)
+  if (invalidReason !== undefined) {
+    const decision = `invalidated:${slugify(invalidReason)}`
+    deps.store.recordEvaluation({
+      ts: now, sessionId: aggregate.sessionId, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens,
+      decision, draftSlug: null,
+    })
+    deps.log(`session-meta: proposal superseded by invalidation of ${proposal.triggerSignature} for ${aggregate.sessionId}: ${invalidReason}`)
+    return { decision, draftSlug: null }
+  }
   mkdirSync(config.skillsDir, { recursive: true })
   const provenance = { sessions: [aggregate.sessionId], mode: aggregate.origin ?? 'unknown' } as const
   // M3 L0: cheapest layer first — render in memory and veto before any file

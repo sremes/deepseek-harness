@@ -6,10 +6,12 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type { StreamChunk } from '@deepseek-ai/dsh-llm'
 import type { EvaluatorLlm } from '../src/evaluator.ts'
 import {
+  drainInvalidationRecords,
   evaluateTrackASession,
   hasSteeringFile,
   listKnownSignatures,
   loadSteeringFile,
+  parseInvalidationFile,
   startOfUtcDay,
   type EvaluationConfig,
 } from '../src/orchestrate.ts'
@@ -698,6 +700,147 @@ describe('evaluateTrackASession dual lenses', () => {
     expect(store?.countReplayRunsSince(0)).toBe(2)
     expect(store?.countEvaluationsSince(0)).toBe(2)
     expect(logs.join('\n')).toMatch(/l2 skipped \(replay budget\)/)
+  })
+})
+
+describe('invalidation ingest', () => {
+  function writeInvalidation(home: string, signature: string, raw: unknown): void {
+    mkdirSync(join(home, 'meta', 'invalidate'), { recursive: true })
+    writeFileSync(join(home, 'meta', 'invalidate', `${signature}.json`), typeof raw === 'string' ? raw : JSON.stringify(raw))
+  }
+
+  function drain(home: string, skills: string, logs: string[]): void {
+    if (store === undefined) throw new Error('store missing')
+    drainInvalidationRecords(home, store, skills, Date.UTC(2026, 8, 4, 12, 0, 0), (message: string) => {
+      logs.push(message)
+    })
+  }
+
+  it('parses a valid reason and rejects bad shapes', () => {
+    expect(parseInvalidationFile('sig', { reason: 'upstream fix landed' })).toBe('upstream fix landed')
+    expect(() => parseInvalidationFile('sig', null)).toThrow()
+    expect(() => parseInvalidationFile('sig', [])).toThrow()
+    expect(() => parseInvalidationFile('sig', {})).toThrow()
+    expect(() => parseInvalidationFile('sig', { reason: '' })).toThrow()
+    expect(() => parseInvalidationFile('sig', { reason: '   ' })).toThrow()
+    expect(() => parseInvalidationFile('sig', { reason: 42 })).toThrow()
+  })
+
+  it('moves a valid record to processed and archives the live skill dir', async () => {
+    const home = await freshHome()
+    const skills = join(home, 'skills')
+    if (store === undefined) throw new Error('store missing')
+    store.recordPromotion('retired-sig', 'retired-sig')
+    store.recordLive('retired-sig')
+    mkdirSync(join(skills, 'retired-sig'), { recursive: true })
+    writeFileSync(join(skills, 'retired-sig', 'SKILL.md'), '# retired\n')
+    writeInvalidation(home, 'retired-sig', { reason: 'upstream fix landed' })
+    const logs: string[] = []
+    drain(home, skills, logs)
+    expect(store.isInvalidated('retired-sig')).toBe('upstream fix landed')
+    expect(store.getSkill('retired-sig')).toMatchObject({ slug: 'retired-sig', confidence: 0.3, status: 'archived' })
+    expect(existsSync(join(skills, 'retired-sig'))).toBe(false)
+    expect(existsSync(join(home, 'meta', 'invalidate', 'retired-sig.json'))).toBe(false)
+    expect(existsSync(join(home, 'meta', 'invalidate', 'processed', 'retired-sig.json'))).toBe(true)
+    expect(logs.join('\n')).toMatch(/invalidated trigger signature retired-sig: upstream fix landed/)
+  })
+
+  it('moves invalid JSON to processed with a .bad suffix and a log line', async () => {
+    const home = await freshHome()
+    const skills = join(home, 'skills')
+    if (store === undefined) throw new Error('store missing')
+    store.recordPromotion('sig', 'slug')
+    writeInvalidation(home, 'sig', '{nope')
+    const logs: string[] = []
+    drain(home, skills, logs)
+    expect(store.isInvalidated('sig')).toBeUndefined()
+    expect(store.getSkill('sig')).toMatchObject({ status: 'probation' })
+    expect(existsSync(join(home, 'meta', 'invalidate', 'sig.json'))).toBe(false)
+    expect(existsSync(join(home, 'meta', 'invalidate', 'processed', 'sig.json.bad'))).toBe(true)
+    expect(logs.join('\n')).toMatch(/ignoring invalid JSON invalidation record for sig/)
+  })
+
+  it('moves invalid records to processed with a .bad suffix and a log line', async () => {
+    const home = await freshHome()
+    const skills = join(home, 'skills')
+    if (store === undefined) throw new Error('store missing')
+    writeInvalidation(home, 'sig', { reason: '  ' })
+    const logs: string[] = []
+    drain(home, skills, logs)
+    expect(store.isInvalidated('sig')).toBeUndefined()
+    expect(existsSync(join(home, 'meta', 'invalidate', 'processed', 'sig.json.bad'))).toBe(true)
+    expect(logs.join('\n')).toMatch(/ignoring invalid invalidation record for sig/)
+  })
+
+  it('ledgers a block for unknown signatures and still consumes the file', async () => {
+    const home = await freshHome()
+    const skills = join(home, 'skills')
+    if (store === undefined) throw new Error('store missing')
+    writeInvalidation(home, 'ghost-sig', { reason: 'upstream fix landed' })
+    const logs: string[] = []
+    drain(home, skills, logs)
+    expect(store.isInvalidated('ghost-sig')).toBe('upstream fix landed')
+    expect(store.getSkill('ghost-sig')).toBeUndefined()
+    expect(existsSync(join(home, 'meta', 'invalidate', 'processed', 'ghost-sig.json'))).toBe(true)
+  })
+
+  it('ignores a missing invalidate directory without throwing', async () => {
+    const home = await freshHome()
+    const logs: string[] = []
+    expect(() => {
+      drain(home, join(home, 'skills'), logs)
+    }).not.toThrow()
+    expect(logs).toEqual([])
+  })
+})
+
+describe('invalidated proposals', () => {
+  function wideConfig(skills: string): EvaluationConfig {
+    return { ...CONFIG, skillsDir: skills, maxCallsPerDay: 10, maxPromotionsPerWeek: 10 }
+  }
+
+  it('archives a live skill via drop-in and blocks re-promotion with decision invalidated', async () => {
+    const home = await freshHome()
+    const skills = join(home, 'skills')
+    if (store === undefined) throw new Error('store missing')
+    const first = await evaluateTrackASession(deps(home, okLlm(), [], undefined), wideConfig(skills), steeredAggregate('s1'))
+    expect(first).toEqual({ decision: 'promoted', draftSlug: 'destructive-path-confirm' })
+    expect(store.getSkill('destructive-path-confirm')).toMatchObject({ status: 'live' })
+    mkdirSync(join(home, 'meta', 'invalidate'), { recursive: true })
+    writeFileSync(
+      join(home, 'meta', 'invalidate', 'destructive-path-confirm.json'),
+      JSON.stringify({ reason: 'upstream fix landed' }),
+    )
+    const logs: string[] = []
+    drainInvalidationRecords(home, store, skills, Date.UTC(2026, 8, 4, 12, 0, 0), (message: string) => {
+      logs.push(message)
+    })
+    expect(store.getSkill('destructive-path-confirm')).toMatchObject({ status: 'archived' })
+    expect(existsSync(join(skills, 'destructive-path-confirm'))).toBe(false)
+    // Re-promotion attempt: invalidated before L0 — no draft, no replay spend.
+    const runner = new FakeReplayRunner([])
+    const relogs: string[] = []
+    const outcome = await evaluateTrackASession(deps(home, okLlm(), relogs, runner), wideConfig(skills), steeredAggregate('s2'))
+    expect(outcome).toEqual({ decision: 'invalidated:upstream-fix-landed', draftSlug: null })
+    expect(existsSync(join(skills, 'destructive-path-confirm'))).toBe(false)
+    expect(store.countReplayRunsSince(0)).toBe(0)
+    expect(relogs.join('\n')).toMatch(/superseded by invalidation.*upstream fix landed/)
+    expect(store.countEvaluationsSince(0)).toBe(2)
+  })
+
+  it('keeps the full reason in the log while the decision stays short', async () => {
+    const home = await freshHome()
+    const skills = join(home, 'skills')
+    if (store === undefined) throw new Error('store missing')
+    const reason = 'a very long upstream explanation with many words about the fix that landed'
+    store.invalidateSignature('destructive-path-confirm', reason, Date.UTC(2026, 8, 4, 12, 0, 0))
+    const logs: string[] = []
+    const outcome = await evaluateTrackASession(deps(home, okLlm(), logs, undefined), wideConfig(skills), steeredAggregate('s1'))
+    expect(outcome.decision.startsWith('invalidated:')).toBe(true)
+    expect(outcome.decision.length).toBeLessThan(reason.length)
+    expect(logs.join('\n')).toContain(reason)
+    expect(outcome.draftSlug).toBeNull()
+    expect(store.countEvaluationsSince(0)).toBe(1)
   })
 })
 

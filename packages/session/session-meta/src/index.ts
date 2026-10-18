@@ -38,7 +38,7 @@ import { redactString, redactValue } from './redact.ts'
 import { MetaStore } from './store.ts'
 import type { EvaluatorLlm } from './evaluator.ts'
 import type { EvaluationConfig } from './orchestrate.ts'
-import { evaluateTrackASession, hasSteeringFile, shouldEvaluateTrackA } from './orchestrate.ts'
+import { evaluateTrackASession, drainInvalidationRecords, hasSteeringFile, shouldEvaluateTrackA } from './orchestrate.ts'
 
 export type * from './types.ts'
 import { drivePendingSteering, type SteeringDriveDeps, type SteeringDriveResult, type SteeringDriveSkip } from './driver.ts'
@@ -219,6 +219,7 @@ function queueBootDrive(tracker: Tracker, ctx: Context): void {
     ctx.logger.info(
       `session-meta: background steering drive: ${result.evaluated} evaluated, ${result.skipped.length} skipped${result.stoppedOnBudget ? ' (budget spent)' : ''}`,
     )
+    ctx.logger.info(`session-meta: stats ${JSON.stringify(tracker.store.getStats())}`)
   }).catch((error: unknown) => {
     ctx.logger.warn(`session-meta: background steering drive failed: ${String(error)}`)
   })
@@ -374,6 +375,11 @@ function finalizeSession(tracker: Tracker, session: Session, ctx: Context): void
     // state after exit). Inside the existing guard so a cache failure can
     // never break the session pipeline.
     tracker.store.writeAggregate(aggregate.sessionId, aggregate)
+    // M5 invalidation drop-ins: retire trigger signatures before the
+    // lifecycle sweep so newly archived rows share the sweep's view.
+    drainInvalidationRecords(tracker.home, tracker.store, tracker.evaluation.skillsDir, endedAt, (message: string) => {
+      ctx.logger.info(message)
+    })
     applySessionSignals(
       tracker.store,
       tracker.evaluation.skillsDir,

@@ -442,6 +442,170 @@ describe('trackb runs', () => {
   })
 })
 
+describe('signature invalidation', () => {
+  it('returns undefined for never-invalidated signatures', () => {
+    expect(freshStore().isInvalidated('missing')).toBeUndefined()
+  })
+
+  it('ledgers a block for unknown signatures without creating a skill row', () => {
+    const db = freshStore()
+    db.invalidateSignature('ghost-sig', 'upstream fix landed', 1000)
+    expect(db.isInvalidated('ghost-sig')).toBe('upstream fix landed')
+    expect(db.getSkill('ghost-sig')).toBeUndefined()
+  })
+
+  it('archives a live skill at the floor, keeping slug and applications', () => {
+    const db = freshStore()
+    db.recordPromotion('sig', 'slug')
+    db.recordLive('sig')
+    db.recordApplication('sig')
+    db.invalidateSignature('sig', 'upstream fix landed', 2000)
+    expect(db.isInvalidated('sig')).toBe('upstream fix landed')
+    expect(db.getSkill('sig')).toMatchObject({ slug: 'slug', confidence: 0.3, appliedCount: 1, status: 'archived' })
+  })
+
+  it('archives a probation skill at the floor', () => {
+    const db = freshStore()
+    db.recordPromotion('sig', 'slug')
+    db.invalidateSignature('sig', 'superseded', 2000)
+    expect(db.isInvalidated('sig')).toBe('superseded')
+    expect(db.getSkill('sig')).toMatchObject({ slug: 'slug', confidence: 0.3, status: 'archived' })
+  })
+
+  it('keeps an archived row archived and refreshes the reason', () => {
+    const db = freshStore()
+    db.recordPromotion('sig', 'slug')
+    db.applyConfidenceDelta('sig', -0.15)
+    expect(db.getSkill('sig')).toMatchObject({ status: 'archived' })
+    db.invalidateSignature('sig', 'second cause', 3000)
+    expect(db.isInvalidated('sig')).toBe('second cause')
+    expect(db.getSkill('sig')).toMatchObject({ slug: 'slug', confidence: 0.3, status: 'archived' })
+  })
+
+  it('migrates a v9 database forward, stamps v10, and serves the ledger', async () => {
+    let dir: string | undefined
+    try {
+      dir = await mkdtemp(join(tmpdir(), 'dsh-meta-v9-'))
+      const path = join(dir, 'meta.db')
+      const legacy = new DatabaseSync(path)
+      // Realistic skeletal v9 database: the migration only adds
+      // invalidations, so every table the test touches needs full columns.
+      legacy.exec(
+        'CREATE TABLE meta_sessions(id TEXT PRIMARY KEY, cwd TEXT, parent_session TEXT, origin TEXT, started_at INTEGER NOT NULL, ended_at INTEGER NOT NULL, events INTEGER NOT NULL, tool_calls INTEGER NOT NULL, tool_errors TEXT NOT NULL, agent_errors TEXT NOT NULL, steering_events INTEGER NOT NULL, feedback_events INTEGER NOT NULL, assistant_messages INTEGER NOT NULL, turn_end_reason TEXT, route TEXT NOT NULL, reasons TEXT NOT NULL, dropped_evidence INTEGER NOT NULL DEFAULT 0);'
+        + 'CREATE TABLE evaluator_ledger(ts INTEGER NOT NULL, session_id TEXT NOT NULL, input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL, decision TEXT NOT NULL, draft_slug TEXT);'
+        + 'CREATE TABLE skill_registry(trigger_signature TEXT PRIMARY KEY, slug TEXT NOT NULL, confidence REAL NOT NULL DEFAULT 0.40, applied_count INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT \'probation\', updated_at INTEGER NOT NULL);'
+        + 'CREATE TABLE promotions(ts INTEGER NOT NULL, trigger_signature TEXT NOT NULL);'
+        + 'CREATE TABLE replay_runs(ts INTEGER NOT NULL);'
+        + 'PRAGMA user_version = 9;',
+      )
+      legacy.close()
+      store = new MetaStore({ dbPath: path })
+      const db = store
+      db.recordPromotion('sig', 'slug')
+      db.recordLive('sig')
+      db.invalidateSignature('sig', 'upstream fix landed', Date.now())
+      expect(db.isInvalidated('sig')).toBe('upstream fix landed')
+      expect(db.getSkill('sig')).toMatchObject({ slug: 'slug', status: 'archived' })
+      expect(db.getStats().invalidations).toBe(1)
+      db.close()
+      store = undefined
+      const raw = new DatabaseSync(path)
+      try {
+        const version = raw.prepare('PRAGMA user_version').get() as { user_version: number }
+        expect(version.user_version).toBe(META_SCHEMA_VERSION)
+      } finally {
+        raw.close()
+      }
+    } finally {
+      store?.close()
+      store = undefined
+      if (dir !== undefined) await rm(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('getStats', () => {
+  function finishedSession(id: string, route: 'track_a' | 'track_b' | 'no_op') {
+    return {
+      id,
+      cwd: null,
+      parentSession: null,
+      origin: null,
+      startedAt: 0,
+      endedAt: 1,
+      events: 1,
+      toolCalls: 0,
+      toolErrors: [],
+      agentErrors: [],
+      steeringEvents: 0,
+      feedbackEvents: 0,
+      assistantMessages: 0,
+      turnEndReason: null,
+      route,
+      reasons: [],
+      droppedEvidence: 0,
+      evidence: [],
+    }
+  }
+
+  it('reports zeros on a fresh store', () => {
+    expect(freshStore().getStats()).toEqual({
+      sessionsByRoute: { track_a: 0, track_b: 0, no_op: 0 },
+      evaluationsByDecision: {},
+      promotionsByWeek: 0,
+      replayRunsByDay: 0,
+      invalidations: 0,
+    })
+  })
+
+  it('counts across routes, decisions, promotions, replays, and invalidations', () => {
+    const db = freshStore()
+    db.writeSession(finishedSession('s-a', 'track_a'))
+    db.writeSession(finishedSession('s-b', 'track_b'))
+    db.recordEvaluation({ ts: 1, sessionId: 's-a', inputTokens: 0, outputTokens: 0, decision: 'promoted', draftSlug: 'x' })
+    db.recordEvaluation({ ts: 2, sessionId: 's-b', inputTokens: 0, outputTokens: 0, decision: 'l0-rejected', draftSlug: null })
+    db.recordPromotion('sig-a', 'slug-a')
+    db.recordReplayRun(Date.now())
+    db.invalidateSignature('sig-a', 'upstream fix landed', Date.now())
+    expect(db.getStats()).toEqual({
+      sessionsByRoute: { track_a: 1, track_b: 1, no_op: 0 },
+      evaluationsByDecision: { promoted: 1, 'l0-rejected': 1 },
+      promotionsByWeek: 1,
+      replayRunsByDay: 1,
+      invalidations: 1,
+    })
+  })
+
+  it('windows promotions by week and replays by day', async () => {
+    let dir: string | undefined
+    try {
+      dir = await mkdtemp(join(tmpdir(), 'dsh-meta-stats-'))
+      const path = join(dir, 'meta.db')
+      store = new MetaStore({ dbPath: path })
+      const db = store
+      db.recordPromotion('fresh-sig', 'fresh-slug')
+      db.recordReplayRun(Date.now())
+      db.recordReplayRun(Date.now() - 2 * 24 * 3600 * 1000)
+      db.close()
+      store = undefined
+      const raw = new DatabaseSync(path)
+      try {
+        raw.prepare('INSERT INTO promotions(ts, trigger_signature) VALUES(?, ?)').run(Date.now() - 8 * 24 * 3600 * 1000, 'stale-sig')
+      } finally {
+        raw.close()
+      }
+      store = new MetaStore({ dbPath: path })
+      const stats = store.getStats()
+      expect(stats.promotionsByWeek).toBe(1)
+      expect(stats.replayRunsByDay).toBe(1)
+    } finally {
+      store?.close()
+      store = undefined
+      if (dir !== undefined) await rm(dir, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('aggregate cache', () => {
   it('round-trips a finalized aggregate with the pending-call map revived', () => {
     const db = freshStore()
