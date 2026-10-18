@@ -6,10 +6,11 @@
  * and ledgered — the session pipeline never throws into flush/dispose.
  */
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { EvaluatorLlm, EvaluatorReply, EvaluatorRoute } from './evaluator.ts'
 import { collectEvaluatorReply, parseDualProposals, parseProposal } from './evaluator.ts'
+import { composeSkill, parseIncumbentClauses, renderComposedSkill, resolveClauseEvidence } from './compose.ts'
 import { judgePair } from './judge.ts'
 import { evaluateL0 } from './l0.ts'
 import { evaluateL1 } from './l1.ts'
@@ -17,6 +18,7 @@ import { projectSession as buildProjection } from './projection.ts'
 import { redactString } from './redact.ts'
 import type { MetaRoute, ReplayOutcome, ReplayRunner } from './types.ts'
 import type { DualEvaluatorProposals } from './types.ts'
+import type { SkillDraft, SkillRegistryRow } from './types.ts'
 import { buildReplaySummary, compareForHarm } from './replay.ts'
 import { parseSteeringFile, processedSteeringDir, steeringFilePath } from './steering.ts'
 import { hasExplicitPersistRequest, hasRecoveredErrors } from './triage.ts'
@@ -383,6 +385,24 @@ async function runLensPipeline(
   // (0.40, one -0.15 regression archives), not a waiting room. L4-full
   // weekly (later slice) acts as demote-only. Live flips stay under the
   // weekly blast cap; over-cap passes hold at probation.
+  // Selective per-clause composition (Harness² steal #3): a draft promoting
+  // under an EXISTING trigger_signature composes instead of overwriting.
+  const incumbent = deps.store.getSkill(proposal.triggerSignature)
+  if (incumbent !== undefined) {
+    return composePromotion(
+      deps,
+      config,
+      aggregate,
+      projection,
+      proposal,
+      usage,
+      now,
+      fileRecord,
+      draft,
+      incumbent,
+      taskInputUsedForL2,
+    )
+  }
   deps.store.recordPromotion(proposal.triggerSignature, draft.slug)
   deps.store.recordPromotionSession(
     proposal.triggerSignature,
@@ -425,4 +445,140 @@ async function runLensPipeline(
   }
   deps.log(`session-meta: gated draft ${draft.slug} written for ${aggregate.sessionId}`)
   return { decision: 'draft-written', draftSlug: draft.slug }
+}
+
+/**
+ * Compose one pipeline-passing draft into the incumbent skill behind its
+ * trigger signature: keep incumbent clauses, add only new ones, record
+ * per-clause evidence, and ledger `composed:<added-count>`.
+ *
+ * Composition never lowers confidence and never resets applied_count: every
+ * added clause independently passed L0–L4 in its own draft; the composed
+ * skill is a union of validated parts, not a new claim. Hence the registry
+ * row (slug, confidence, status, applied_count) is left untouched — no
+ * `recordPromotion`/`recordLive`/confidence write here.
+ *
+ * @param deps - runtime dependencies (store, paths, clock, log).
+ * @param config - resolved Track A settings (skills root).
+ * @param aggregate - finalized session aggregate being evaluated.
+ * @param projection - state projection the proposal was parsed against.
+ * @param proposal - pipeline-passing lens proposal.
+ * @param usage - ledger token usage for this lens.
+ * @param now - evaluation timestamp (UTC millis).
+ * @param fileRecord - steering file record when one was consumed.
+ * @param draft - freshly written gated draft (removed after merging).
+ * @param incumbent - existing registry row for the signature (live or probation).
+ * @param taskInputUsedForL2 - replay task input when L2 ran.
+ * @returns the composed outcome (`composed:<added-count>`, kept slug).
+ */
+function composePromotion(
+  deps: EvaluationDeps,
+  config: EvaluationConfig,
+  aggregate: SessionAggregate,
+  projection: SessionProjection,
+  proposal: EvaluatorProposal,
+  usage: { readonly inputTokens: number; readonly outputTokens: number },
+  now: number,
+  fileRecord: SteeringRecord | undefined,
+  draft: SkillDraft,
+  incumbent: SkillRegistryRow,
+  taskInputUsedForL2: string | undefined,
+): EvaluationOutcome {
+  const incumbentDir = join(config.skillsDir, incumbent.slug)
+  const incumbentFile = join(incumbentDir, 'SKILL.md')
+  // `writeSkillDraft` reuses the incumbent directory when its `SKILL.md` is
+  // absent, so `draft.dir === incumbentDir` means the incumbent file was
+  // missing at draft-write time and the draft file just created it. Parsing
+  // that draft as the incumbent would misread incoming clauses as kept and
+  // the cleanup below would delete the skill — treat the incumbent as empty
+  // and keep the draft directory instead.
+  if (draft.dir === incumbentDir) {
+    const composed = composeSkill({ forbidden: [], prescribed: [] }, proposal)
+    const addedCount = composed.added.length
+    if (incumbent.status === 'live') promoteDraftFile(incumbentDir)
+    for (const entry of resolveClauseEvidence(composed.added, proposal)) {
+      deps.store.recordClauseEvidence(proposal.triggerSignature, entry.clause, entry.evidence, entry.verdict, now)
+    }
+    deps.store.recordPromotionEvent(proposal.triggerSignature)
+    deps.store.recordPromotionSession(
+      proposal.triggerSignature,
+      aggregate.sessionId,
+      taskInputUsedForL2 ?? aggregate.openingTask ?? projection.goal,
+      now,
+    )
+    deps.store.recordEvaluation({
+      ts: now,
+      sessionId: aggregate.sessionId,
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      decision: `composed:${addedCount}`,
+      draftSlug: incumbent.slug,
+    })
+    if (fileRecord !== undefined && existsSync(steeringFilePath(deps.home, aggregate.sessionId))) {
+      const processedDir = processedSteeringDir(deps.home)
+      mkdirSync(processedDir, { recursive: true })
+      renameSync(steeringFilePath(deps.home, aggregate.sessionId), join(processedDir, `${aggregate.sessionId}.json`))
+    }
+    deps.log(`session-meta: composed ${addedCount} new clauses into ${incumbent.slug} for ${aggregate.sessionId}`)
+    return { decision: `composed:${addedCount}`, draftSlug: incumbent.slug }
+  }
+  let incumbentText: string | undefined
+  try {
+    incumbentText = readFileSync(incumbentFile, 'utf8')
+  } catch {
+    incumbentText = undefined
+  }
+  const incumbentClauses = incumbentText === undefined
+    ? { forbidden: [] as string[], prescribed: [] as string[] }
+    : parseIncumbentClauses(incumbentText)
+  const composed = composeSkill(incumbentClauses, proposal)
+  const addedCount = composed.added.length
+  let rewritten = false
+  if (incumbentText !== undefined) {
+    try {
+      writeFileSync(incumbentFile, renderComposedSkill(incumbentText, composed))
+      rewritten = true
+    } catch {
+      rewritten = false
+    }
+  }
+  if (!rewritten) {
+    const provenance = { sessions: [aggregate.sessionId], mode: aggregate.origin ?? 'unknown' } as const
+    mkdirSync(incumbentDir, { recursive: true })
+    writeFileSync(
+      incumbentFile,
+      renderDraft(
+        { ...proposal, forbidden: composed.forbidden, prescribed: composed.prescribed },
+        provenance,
+        incumbent.slug,
+      ),
+    )
+    if (incumbent.status === 'live') promoteDraftFile(incumbentDir)
+  }
+  for (const entry of resolveClauseEvidence(composed.added, proposal)) {
+    deps.store.recordClauseEvidence(proposal.triggerSignature, entry.clause, entry.evidence, entry.verdict, now)
+  }
+  deps.store.recordPromotionEvent(proposal.triggerSignature)
+  deps.store.recordPromotionSession(
+    proposal.triggerSignature,
+    aggregate.sessionId,
+    taskInputUsedForL2 ?? aggregate.openingTask ?? projection.goal,
+    now,
+  )
+  rmSync(draft.dir, { recursive: true, force: true })
+  deps.store.recordEvaluation({
+    ts: now,
+    sessionId: aggregate.sessionId,
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    decision: `composed:${addedCount}`,
+    draftSlug: incumbent.slug,
+  })
+  if (fileRecord !== undefined && existsSync(steeringFilePath(deps.home, aggregate.sessionId))) {
+    const processedDir = processedSteeringDir(deps.home)
+    mkdirSync(processedDir, { recursive: true })
+    renameSync(steeringFilePath(deps.home, aggregate.sessionId), join(processedDir, `${aggregate.sessionId}.json`))
+  }
+  deps.log(`session-meta: composed ${addedCount} new clauses into ${incumbent.slug} for ${aggregate.sessionId}`)
+  return { decision: `composed:${addedCount}`, draftSlug: incumbent.slug }
 }

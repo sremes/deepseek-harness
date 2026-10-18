@@ -69,7 +69,7 @@ function parseFrontmatterFields(frontmatter: readonly string[]): FrontmatterFiel
   return { fields, metadata }
 }
 
-interface BodySections {
+export interface BodySections {
   readonly forbidden: string[]
   readonly prescribed: string[]
   readonly hasForbidden: boolean
@@ -79,7 +79,7 @@ interface BodySections {
 // Collect `- ` bullets under each `## Forbidden` / `## Prescribed` heading. A
 // later `## ` heading ends the current section; stray bullets outside both
 // sections are ignored.
-function parseBodySections(body: readonly string[]): BodySections {
+export function parseBodySections(body: readonly string[]): BodySections {
   const forbidden: string[] = []
   const prescribed: string[] = []
   let hasForbidden = false

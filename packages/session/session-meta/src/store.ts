@@ -7,8 +7,9 @@
  * ledger; schema v3 adds the skill registry; schema v4 adds the replay-run
  * budget ledger; schema v5 adds the skill-sessions history; schema v6 adds
  * the promotions ledger; schema v7 adds the Track B spec-runner ledger;
- * schema v8 persists per-session aggregates for the post-hoc steering driver.
- * v1/v2/v3/v4/v5/v6/v7
+ * schema v8 persists per-session aggregates for the post-hoc steering driver;
+ * schema v9 adds per-clause composition evidence.
+ * v1/v2/v3/v4/v5/v6/v7/v8
  * databases migrate forward automatically (new tables only — no row
  * rewrites). Anything else throws instead of migrating (repo stance).
  *
@@ -20,8 +21,8 @@ import { dirname } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import type { EvaluatorLedgerRow, MetaRoute, MetaSessionRow, SessionAggregate, SkillRegistryRow, SkillStatus, TrackBRunRow } from './types.ts'
 
-/** On-disk schema version; v1/v2/v3/v4/v5/v6/v7 migrate to v8, anything else throws. */
-export const META_SCHEMA_VERSION = 8
+/** On-disk schema version; v1/v2/v3/v4/v5/v6/v7/v8 migrate to v9, anything else throws. */
+export const META_SCHEMA_VERSION = 9
 
 /** Pipeline-promoted skills start here (probation — one regression archives). */
 export const SKILL_PROBATION_CONFIDENCE = 0.4
@@ -101,7 +102,24 @@ CREATE TABLE IF NOT EXISTS meta_aggregates(
   session_id TEXT PRIMARY KEY,
   aggregate TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS clause_evidence(
+  signature TEXT NOT NULL,
+  clause TEXT NOT NULL,
+  evidence TEXT NOT NULL,
+  verdict TEXT NOT NULL,
+  ts INTEGER NOT NULL,
+  PRIMARY KEY(signature, clause)
+);
 `
+
+/** Persisted `clause_evidence` row: per-clause attribution for composed skills. */
+export interface ClauseEvidenceRow {
+  readonly signature: string
+  readonly clause: string
+  readonly evidence: string
+  readonly verdict: 'isolated' | 'confounded'
+  readonly ts: number
+}
 
 /** Narrow write model: one finished session plus its evidence rows. */
 export interface FinishedSession {
@@ -136,9 +154,9 @@ export class MetaStore {
     const version = this.db.prepare('PRAGMA user_version').get() as { user_version: number }
     if (version.user_version === 0) {
       this.db.exec(`PRAGMA user_version = ${META_SCHEMA_VERSION}`)
-    } else if (version.user_version >= 1 && version.user_version <= 7) {
-      // v1/v2/v3/v4/v5/v6/v7 → v8 are additive only (evaluator_ledger, skill_registry,
-      // replay_runs, skill_sessions, promotions, trackb_runs, meta_aggregates, created above): stamp forward.
+    } else if (version.user_version >= 1 && version.user_version <= 8) {
+      // v1/v2/v3/v4/v5/v6/v7/v8 → v9 are additive only (evaluator_ledger, skill_registry,
+      // replay_runs, skill_sessions, promotions, trackb_runs, meta_aggregates, clause_evidence, created above): stamp forward.
       this.db.exec(`PRAGMA user_version = ${META_SCHEMA_VERSION}`)
     } else if (version.user_version !== META_SCHEMA_VERSION) {
       const seen = version.user_version
@@ -345,7 +363,20 @@ export class MetaStore {
       ON CONFLICT(trigger_signature) DO UPDATE SET
         slug=excluded.slug, confidence=excluded.confidence, applied_count=0,
         status=excluded.status, updated_at=excluded.updated_at`).run(signature, slug, now)
-    this.db.prepare('INSERT INTO promotions(ts, trigger_signature) VALUES(?, ?)').run(now, signature)
+    this.recordPromotionEvent(signature)
+  }
+
+  /**
+   * Ledger one promotion event without touching the registry row. Composition
+   * (Harness² steal #3) keeps slug, confidence, status, and applied_count by
+   * design, but the weekly blast cap counts `promotions` rows — a composed
+   * promotion must trip the same counter as a replacing one.
+   *
+   * @param signature - The composed `trigger_signature`.
+   * @returns No return value; one promotions-ledger row is appended.
+   */
+  recordPromotionEvent(signature: string): void {
+    this.db.prepare('INSERT INTO promotions(ts, trigger_signature) VALUES(?, ?)').run(Date.now(), signature)
   }
 
   /**
@@ -431,6 +462,48 @@ export class MetaStore {
       'SELECT session_id, task_input FROM skill_sessions WHERE trigger_signature = ? AND session_id != ? ORDER BY ts DESC LIMIT ?',
     ).all(signature, excludeSessionId, limit) as Array<{ session_id: string; task_input: string }>
     return rows.map(row => ({ sessionId: row.session_id, taskInput: row.task_input }))
+  }
+
+  /**
+   * Record per-clause evidence for one composed clause. Re-promotion of the
+   * same clause replaces its row (one row per signature+clause).
+   *
+   * @param signature - The composed `trigger_signature` (the table key prefix).
+   * @param clause - The added clause text (trimmed, exact-match key).
+   * @param evidence - Matching incoming evidence entries joined by newline, or `unmatched`.
+   * @param verdict - `isolated` only for single-clause promoting drafts, else `confounded`.
+   * @param ts - Promotion timestamp (UTC millis).
+   * @returns No return value; one row is upserted.
+   */
+  recordClauseEvidence(
+    signature: string,
+    clause: string,
+    evidence: string,
+    verdict: 'isolated' | 'confounded',
+    ts: number,
+  ): void {
+    this.db.prepare(
+      'INSERT OR REPLACE INTO clause_evidence(signature, clause, evidence, verdict, ts) VALUES(?, ?, ?, ?, ?)',
+    ).run(signature, clause, evidence, verdict, ts)
+  }
+
+  /**
+   * List per-clause evidence rows for one signature, in clause order.
+   *
+   * @param signature - The `trigger_signature` to look up.
+   * @returns All clause evidence rows for the signature, ordered by clause.
+   */
+  listClauseEvidence(signature: string): readonly ClauseEvidenceRow[] {
+    const rows = this.db.prepare(
+      'SELECT signature, clause, evidence, verdict, ts FROM clause_evidence WHERE signature = ? ORDER BY clause',
+    ).all(signature) as Array<{ signature: string; clause: string; evidence: string; verdict: 'isolated' | 'confounded'; ts: number }>
+    return rows.map(row => ({
+      signature: row.signature,
+      clause: row.clause,
+      evidence: row.evidence,
+      verdict: row.verdict,
+      ts: row.ts,
+    }))
   }
 
   /**

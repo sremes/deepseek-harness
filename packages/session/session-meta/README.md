@@ -162,6 +162,18 @@ evaluate. Knobs: `evaluator.minEvalToolCalls` (default 3),
 `evaluator.earlySteeringMessages` (default 1). Passing drafts promote to live
 immediately under a weekly blast cap (`evaluator.maxPromotionsPerWeek`, default 3).
 
+A draft that passes the pipeline under an EXISTING `trigger_signature`
+composes instead of replacing: the incumbent skill file keeps its slug while
+its Forbidden/Prescribed sections union with the incoming draft (exact-trimmed-match
+dedupe only — near-dupes are kept as distinct clauses, no similarity matching).
+Additive composition never re-probations earned trust: the registry row keeps its
+slug, confidence, status, and `applied_count`. Each newly added clause records one
+`clause_evidence` row (schema v9); the verdict is `isolated` only when the promoting
+draft carried exactly one clause total, otherwise `confounded` (the default, preferred
+over invented attribution). The composition ledgers `composed:<added-count>` with the
+kept slug, plus a promotions-table row so composed promotions trip the same weekly
+blast-cap counter as replacing ones.
+
 Records written after their session exited are not lost: `drivePendingSteering`
 (post-hoc driver) runs pending `meta/steering/*.json` files through the same
 gates and the same `evaluateTrackASession` — the explicit file bypasses the
@@ -183,7 +195,7 @@ Synchronous handlers only aggregate and buffer. SQLite writes happen on
 canonical session log is never rewritten — redaction applies to the meta
 copy only (PEM blocks, known token prefixes, `key=value` secrets, `cwd` →
 `$CWD`, home → `~`, per-string/array/depth bounds). On-disk schema is
-versioned (`PRAGMA user_version = 8`); older versions migrate forward, anything
+versioned (`PRAGMA user_version = 9`); older versions migrate forward, anything
 else throws instead of migrating.
 
 <details>
@@ -195,14 +207,15 @@ else throws instead of migrating.
 - `src/evaluator.ts` — budget-capped Flash call over Σ; schema-validated proposals.
 - `src/judge.ts` — M3 L4-lite blinded order-swapped pairwise judge; harm veto only, fails closed.
 - `src/replay.ts` — M3 L2/L3 replay-driver seam: outcome data, runner interface, scripted fake, harm veto, judge summary.
-- `src/orchestrate.ts` — offline loop driver (budget, steering files, effort gate, L0/L1 gates, L2 motivating-task replay gate, L3 regression-sample gate, gated drafts).
+- `src/orchestrate.ts` — offline loop driver (budget, steering files, effort gate, L0/L1 gates, L2 motivating-task replay gate, L3 regression-sample gate, gated drafts, signature-collision composition).
+- `src/compose.ts` — selective per-clause composition: incumbent-clause union with exact-trimmed-match dedupe plus confounded-preferring per-clause evidence.
 - `src/driver.ts` — post-hoc steering driver (`drivePendingSteering`): pending records through the same pipeline after session exit.
 - `src/steering.ts` — headless correction-record ingest.
 - `src/writer.ts` — gated `SKILL.md` drafts (`disable-model-invocation`, `whenToUse`).
 - `src/l0.ts` — M3 L0 contract gate: deterministic veto over a rendered draft (frontmatter, metadata, sections, mechanizable bans); the orchestrator ledgers `l0-rejected` without writing.
  - `src/l1.ts` — M3 L1 self-test gate: a Prescribed clause is checkable when it names a session tool or quotes inline `code`; the orchestrator ledgers `l1-rejected` without writing.
 - `src/redact.ts` — secret scrubbing and bounds.
-- `src/store.ts` — `node:sqlite` meta store (`MetaStore`, `META_SCHEMA_VERSION`) plus the M3 skill registry (promotion lifecycle).
+- `src/store.ts` — `node:sqlite` meta store (`MetaStore`, `META_SCHEMA_VERSION`) plus the M3 skill registry (promotion lifecycle) and `clause_evidence` (per-clause composition verdicts).
 - `src/curator.ts` — M3 post-promotion lifecycle signals: per-session applied/confidence moves (silence-neutral) plus the 90-day decay sweep, wired from finalize.
 - `src/trackb.ts` — M4 Track B reproduction emitter: parser-class crashes become characterization specs under `.dsh/reproductions/` (pass while the crash reproduces, fail if upstream ever accepts the payload), everything else lands in the `breakages.jsonl` upstream-PR register. The M4 spec runner executes each emitted spec once under the resolved Vitest binary and ledgers the exit code in `trackb_runs` (no curator hook reads it — invalidation stays reviewer-side until M5).
 - `src/types.ts` — types only.

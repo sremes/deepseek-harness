@@ -65,6 +65,18 @@ describe('recordPromotion', () => {
   })
 })
 
+describe('recordPromotionEvent', () => {
+  it('ledgers a promotion without touching the registry row', () => {
+    const db = freshStore()
+    db.recordPromotion('sig', 'slug')
+    db.recordApplication('sig')
+    const before = db.getSkill('sig')
+    db.recordPromotionEvent('sig')
+    expect(db.getSkill('sig')).toEqual(before)
+    expect(db.countPromotionsSince(0)).toBe(2)
+  })
+})
+
 describe('recordLive', () => {
   it('moves a probation row to live, keeping confidence and applications', () => {
     const db = freshStore()

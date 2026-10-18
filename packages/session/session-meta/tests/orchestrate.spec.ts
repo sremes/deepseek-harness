@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { StreamChunk } from '@deepseek-ai/dsh-llm'
 import type { EvaluatorLlm } from '../src/evaluator.ts'
@@ -166,6 +166,13 @@ function l0FailingLlm(): EvaluatorLlm {
       yield* chunks
     },
   }
+}
+
+/** Aggregate carrying steering texts (shared fixture helper). */
+function steeredAggregate(sessionId: string) {
+  const aggregate = makeAggregate(sessionId)
+  aggregate.steeringTexts.push('not like that')
+  return aggregate
 }
 
 describe('startOfUtcDay', () => {
@@ -574,12 +581,6 @@ describe('evaluateTrackASession dual lenses', () => {
     return { rows }
   }
 
-  function steeredAggregate(sessionId: string) {
-    const aggregate = makeAggregate(sessionId)
-    aggregate.steeringTexts.push('not like that')
-    return aggregate
-  }
-
   it('promotes the domain lens while ledgering the declined invariant lens', async () => {
     const home = await freshHome()
     const skills = join(home, 'skills')
@@ -697,5 +698,216 @@ describe('evaluateTrackASession dual lenses', () => {
     expect(store?.countReplayRunsSince(0)).toBe(2)
     expect(store?.countEvaluationsSince(0)).toBe(2)
     expect(logs.join('\n')).toMatch(/l2 skipped \(replay budget\)/)
+  })
+})
+
+describe('evaluateTrackASession signature-collision composition', () => {
+  const SECOND_PROPOSAL = {
+    intent: 'Confirm destructive paths before running them',
+    forbidden: ['Never run rm -rf on unconfirmed paths', 'Never expand `glob` without listing matches first'],
+    prescribed: ['Echo the resolved `path` and wait for confirmation', 'Echo the confirmed `path` after listing matches'],
+    trigger_signature: 'destructive-path-confirm',
+    trigger_conditions: 'Use when a task deletes or overwrites paths outside a scratch directory',
+    platform: 'dsh-headless',
+    evidence: ['step 1: `rm` called without confirmation flags', 'step 2: `glob` expanded without listing matches'],
+  }
+
+  function proposalLlm(proposal: unknown): EvaluatorLlm {
+    const chunks = textChunks(JSON.stringify(proposal), { inputTokens: 5, outputTokens: 6 })
+    return {
+      async *stream(): AsyncIterable<StreamChunk> {
+        yield* chunks
+      },
+    }
+  }
+
+  function wideConfig(skills: string): EvaluationConfig {
+    return { ...CONFIG, skillsDir: skills, maxCallsPerDay: 10, maxPromotionsPerWeek: 10 }
+  }
+
+  it('replays the projection goal fallback when the aggregate has no opening task', async () => {
+    const home = await freshHome()
+    const skills = join(home, 'skills')
+    const runner = new FakeReplayRunner([replayOutcome({}), replayOutcome({})])
+    const outcome = await evaluateTrackASession(deps(home, judgePassLlm(), [], runner), wideConfig(skills), steeredAggregate('s1'))
+    expect(outcome).toEqual({ decision: 'promoted', draftSlug: 'destructive-path-confirm' })
+    expect(store?.countReplayRunsSince(0)).toBe(2)
+  })
+
+  it('composes new clauses on collision, keeping slug/confidence/status/applied_count and ledgering composed:<n>', async () => {
+    const home = await freshHome()
+    const skills = join(home, 'skills')
+    const first = await evaluateTrackASession(deps(home, okLlm(), []), wideConfig(skills), steeredAggregate('s1'))
+    expect(first).toEqual({ decision: 'promoted', draftSlug: 'destructive-path-confirm' })
+    store?.recordApplication('destructive-path-confirm')
+    store?.applyConfidenceDelta('destructive-path-confirm', 0.1)
+    expect(store?.getSkill('destructive-path-confirm')).toMatchObject({
+      slug: 'destructive-path-confirm',
+      confidence: 0.5,
+      appliedCount: 1,
+      status: 'live',
+    })
+    mkdirSync(join(home, 'meta', 'steering'), { recursive: true })
+    writeFileSync(steeringFilePath(home, 's2'), JSON.stringify({ original_task: 'do x', correction: 'do y instead' }))
+    const logs: string[] = []
+    const outcome = await evaluateTrackASession(deps(home, proposalLlm(SECOND_PROPOSAL), logs), wideConfig(skills), steeredAggregate('s2'))
+    expect(outcome).toEqual({ decision: 'composed:2', draftSlug: 'destructive-path-confirm' })
+    expect(store?.getSkill('destructive-path-confirm')).toMatchObject({
+      slug: 'destructive-path-confirm',
+      confidence: 0.5,
+      appliedCount: 1,
+      status: 'live',
+    })
+    const text = readFileSync(join(skills, 'destructive-path-confirm', 'SKILL.md'), 'utf8')
+    expect(text).toContain('Never run rm -rf on unconfirmed paths')
+    expect(text).toContain('Never expand `glob` without listing matches first')
+    expect(text).toContain('Echo the confirmed `path` after listing matches')
+    expect(text.match(/Never run rm -rf on unconfirmed paths/g)).toHaveLength(1)
+    expect(text).not.toContain('disable-model-invocation: true')
+    expect(existsSync(join(skills, 'destructive-path-confirm-2'))).toBe(false)
+    const rows = store?.listClauseEvidence('destructive-path-confirm') ?? []
+    expect(rows).toHaveLength(2)
+    expect(rows.every(row => row.verdict === 'confounded')).toBe(true)
+    expect(rows.find(row => row.clause.includes('glob'))?.evidence).toContain('`glob` expanded without listing matches')
+    expect(store?.countEvaluationsSince(0)).toBe(2)
+    expect(store?.countPromotionsSince(0)).toBe(2)
+    expect(store?.listPromotionSessions('destructive-path-confirm', 5, 'none').map(row => row.sessionId)).toContain('s2')
+    expect(existsSync(steeringFilePath(home, 's2'))).toBe(false)
+    expect(existsSync(join(home, 'meta', 'steering', 'processed', 's2.json'))).toBe(true)
+    expect(logs.join('\n')).toMatch(/composed 2 new clauses/)
+  })
+
+  it('dedupes identical clauses (composed:0) without duplicating file bullets', async () => {
+    const home = await freshHome()
+    const skills = join(home, 'skills')
+    await evaluateTrackASession(deps(home, okLlm(), []), wideConfig(skills), steeredAggregate('s1'))
+    const outcome = await evaluateTrackASession(deps(home, okLlm(), []), wideConfig(skills), steeredAggregate('s2'))
+    expect(outcome).toEqual({ decision: 'composed:0', draftSlug: 'destructive-path-confirm' })
+    const after = readFileSync(join(skills, 'destructive-path-confirm', 'SKILL.md'), 'utf8')
+    expect(after.match(/Never run rm -rf on unconfirmed paths/g)).toHaveLength(1)
+    expect(after.match(/Echo the resolved `path` and wait for confirmation/g)).toHaveLength(1)
+    expect(after).not.toContain('disable-model-invocation: true')
+    expect(store?.listClauseEvidence('destructive-path-confirm')).toEqual([])
+    expect(store?.getSkill('destructive-path-confirm')).toMatchObject({ status: 'live', confidence: 0.4, appliedCount: 0 })
+  })
+
+  it('records an isolated verdict for a single-clause promoting draft', async () => {
+    const home = await freshHome()
+    const skills = join(home, 'skills')
+    await evaluateTrackASession(deps(home, okLlm(), []), wideConfig(skills), steeredAggregate('s1'))
+    const single = {
+      intent: 'Confirm destructive paths before running them',
+      forbidden: [],
+      prescribed: ['Verify the `checksum` before publishing'],
+      trigger_signature: 'destructive-path-confirm',
+      trigger_conditions: 'Use when a task deletes or overwrites paths outside a scratch directory',
+      platform: 'dsh-headless',
+      evidence: ['step 1: computed the `checksum` before publishing'],
+    }
+    const outcome = await evaluateTrackASession(deps(home, proposalLlm(single), []), wideConfig(skills), steeredAggregate('s2'))
+    expect(outcome).toEqual({ decision: 'composed:1', draftSlug: 'destructive-path-confirm' })
+    const rows = store?.listClauseEvidence('destructive-path-confirm') ?? []
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ verdict: 'isolated' })
+    expect(rows[0]?.evidence).toContain('step 1: computed the `checksum` before publishing')
+  })
+
+  it('keeps probation status on composition (no re-probation, no promotion)', async () => {
+    const home = await freshHome()
+    const skills = join(home, 'skills')
+    await evaluateTrackASession(deps(home, okLlm(), []), wideConfig(skills), steeredAggregate('s1'))
+    store?.recordPromotion('probation-sig', 'probation-sig')
+    mkdirSync(join(skills, 'probation-sig'), { recursive: true })
+    writeFileSync(
+      join(skills, 'probation-sig', 'SKILL.md'),
+      readFileSync(join(skills, 'destructive-path-confirm', 'SKILL.md'), 'utf8').replace(
+        'trigger_signature: destructive-path-confirm',
+        'trigger_signature: probation-sig',
+      ),
+    )
+    const incoming = {
+      ...SECOND_PROPOSAL,
+      forbidden: ['Never run rm -rf on unconfirmed paths', 'Never expand `glob` without listing matches first'],
+      prescribed: ['Echo the resolved `path` and wait for confirmation', 'Echo the confirmed `path` after listing matches'],
+      trigger_signature: 'probation-sig',
+    }
+    const outcome = await evaluateTrackASession(deps(home, proposalLlm(incoming), []), wideConfig(skills), steeredAggregate('s2'))
+    expect(outcome).toEqual({ decision: 'composed:2', draftSlug: 'probation-sig' })
+    expect(store?.getSkill('probation-sig')).toMatchObject({ slug: 'probation-sig', status: 'probation', confidence: 0.4 })
+  })
+
+  it('rebuilds a missing incumbent file under the kept slug and promotes it live', async () => {
+    const home = await freshHome()
+    const skills = join(home, 'skills')
+    await evaluateTrackASession(deps(home, okLlm(), []), wideConfig(skills), steeredAggregate('s1'))
+    rmSync(join(skills, 'destructive-path-confirm', 'SKILL.md'))
+    const outcome = await evaluateTrackASession(deps(home, proposalLlm(SECOND_PROPOSAL), []), wideConfig(skills), steeredAggregate('s2'))
+    // The incumbent clauses are unrecoverable without their file, so every
+    // incoming clause counts as added.
+    expect(outcome).toEqual({ decision: 'composed:4', draftSlug: 'destructive-path-confirm' })
+    const text = readFileSync(join(skills, 'destructive-path-confirm', 'SKILL.md'), 'utf8')
+    expect(text).toContain('Never expand `glob` without listing matches first')
+    expect(text).not.toContain('disable-model-invocation: true')
+    expect(store?.getSkill('destructive-path-confirm')).toMatchObject({ slug: 'destructive-path-confirm', status: 'live' })
+  })
+
+  it('rebuilds a corrupt incumbent file without promoting a probation row', async () => {
+    const home = await freshHome()
+    const skills = join(home, 'skills')
+    await evaluateTrackASession(deps(home, okLlm(), []), { ...CONFIG, skillsDir: skills, maxCallsPerDay: 10, maxPromotionsPerWeek: 0 }, steeredAggregate('s1'))
+    expect(store?.getSkill('destructive-path-confirm')).toMatchObject({ status: 'probation' })
+    writeFileSync(join(skills, 'destructive-path-confirm', 'SKILL.md'), 'corrupt file without sections\n')
+    const outcome = await evaluateTrackASession(deps(home, proposalLlm(SECOND_PROPOSAL), []), wideConfig(skills), steeredAggregate('s2'))
+    // A section-less file parses to no clauses, so every incoming clause is new.
+    expect(outcome).toEqual({ decision: 'composed:4', draftSlug: 'destructive-path-confirm' })
+    const text = readFileSync(join(skills, 'destructive-path-confirm', 'SKILL.md'), 'utf8')
+    expect(text).toContain('disable-model-invocation: true')
+    expect(store?.getSkill('destructive-path-confirm')).toMatchObject({ status: 'probation' })
+  })
+
+  it('rebuilds a corrupt live file and promotes the rebuild', async () => {
+    const home = await freshHome()
+    const skills = join(home, 'skills')
+    await evaluateTrackASession(deps(home, okLlm(), []), wideConfig(skills), steeredAggregate('s1'))
+    expect(store?.getSkill('destructive-path-confirm')).toMatchObject({ status: 'live' })
+    writeFileSync(join(skills, 'destructive-path-confirm', 'SKILL.md'), 'corrupt file without sections\n')
+    const outcome = await evaluateTrackASession(deps(home, proposalLlm(SECOND_PROPOSAL), []), wideConfig(skills), steeredAggregate('s2'))
+    expect(outcome).toEqual({ decision: 'composed:4', draftSlug: 'destructive-path-confirm' })
+    expect(readFileSync(join(skills, 'destructive-path-confirm', 'SKILL.md'), 'utf8')).not.toContain(
+      'disable-model-invocation: true',
+    )
+    expect(store?.getSkill('destructive-path-confirm')).toMatchObject({ status: 'live' })
+  })
+
+  it('keeps a missing probation file gated on the draft-reuse path', async () => {
+    const home = await freshHome()
+    const skills = join(home, 'skills')
+    await evaluateTrackASession(deps(home, okLlm(), []), { ...CONFIG, skillsDir: skills, maxCallsPerDay: 10, maxPromotionsPerWeek: 0 }, steeredAggregate('s1'))
+    expect(store?.getSkill('destructive-path-confirm')).toMatchObject({ status: 'probation' })
+    rmSync(join(skills, 'destructive-path-confirm', 'SKILL.md'))
+    mkdirSync(join(home, 'meta', 'steering'), { recursive: true })
+    writeFileSync(steeringFilePath(home, 's2'), JSON.stringify({ original_task: 'do x', correction: 'do y instead' }))
+    const outcome = await evaluateTrackASession(deps(home, proposalLlm(SECOND_PROPOSAL), []), wideConfig(skills), steeredAggregate('s2'))
+    expect(outcome).toEqual({ decision: 'composed:4', draftSlug: 'destructive-path-confirm' })
+    expect(readFileSync(join(skills, 'destructive-path-confirm', 'SKILL.md'), 'utf8')).toContain(
+      'disable-model-invocation: true',
+    )
+    expect(store?.getSkill('destructive-path-confirm')).toMatchObject({ status: 'probation' })
+    expect(existsSync(steeringFilePath(home, 's2'))).toBe(false)
+    expect(existsSync(join(home, 'meta', 'steering', 'processed', 's2.json'))).toBe(true)
+  })
+
+  it('rebuilds a missing file when the kept slug differs from the draft slug', async () => {
+    const home = await freshHome()
+    const skills = join(home, 'skills')
+    store?.recordPromotion('custom-sig', 'custom-slug')
+    const incoming = { ...SECOND_PROPOSAL, trigger_signature: 'custom-sig' }
+    const outcome = await evaluateTrackASession(deps(home, proposalLlm(incoming), []), wideConfig(skills), steeredAggregate('s1'))
+    expect(outcome).toEqual({ decision: 'composed:4', draftSlug: 'custom-slug' })
+    expect(existsSync(join(skills, 'custom-sig'))).toBe(false)
+    expect(readFileSync(join(skills, 'custom-slug', 'SKILL.md'), 'utf8')).toContain(
+      'Never expand `glob` without listing matches first',
+    )
+    expect(store?.getSkill('custom-sig')).toMatchObject({ slug: 'custom-slug', status: 'probation' })
   })
 })
