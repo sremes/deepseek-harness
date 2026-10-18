@@ -1,5 +1,5 @@
 ---
-description: "Deterministic-first approval answerer: blacklist deny plus narrow whole-command allowlist plus bounded LLM judge over the approval/request waterfall, fail-closed throughout."
+description: "Deterministic-first approval answerer: blacklist deny plus narrow whole-command allowlist plus a typed Jev decision (generative-LLM fallback) over the approval/request waterfall, fail-closed throughout."
 kind: "package-reference"
 ---
 
@@ -7,7 +7,7 @@ kind: "package-reference"
 
 ## Summary
 
-`dsh-approval-gate` is an approval answerer for unattended profiles: it listens on the `approval/request` waterfall and decides sandbox-escalation asks in three layers — an exact-deny blacklist, a narrow whole-command allowlist, and a bounded LLM judge — delegating everything else via `next()`. The service appends the asked/decided audit pair for every outcome either way, so the gate adds decisions without touching the audit contract.
+`dsh-approval-gate` is an approval answerer for unattended profiles: it listens on the `approval/request` waterfall and decides sandbox-escalation asks in three layers — an exact-deny blacklist, a narrow whole-command allowlist, and a bounded judge — delegating everything else via `next()`. The default judge is a typed Jev `Choice` (allow/reject with calibrated probabilities; low-confidence allows escalate to a human, rejects are never softened); a generative-LLM route (OpenCode Go Spark, DeepInfra fallback) remains as the `llm` backend. The service appends the asked/decided audit pair for every outcome either way, so the gate adds decisions without touching the audit contract.
 
 ## Table of Contents
 
@@ -30,19 +30,25 @@ Mount the plugin where escalation asks need answers and no human is composed (he
 - name: '@deepseek-ai/dsh-approval-gate'
   config:
     dshHome: !!js process.env.DSH_HOME
-    apiKeyEnv: OPENCODE_GO_API_KEY
 ```
+
+Defaults judge through Jev (`jev-preview`); `TYPESAFE_KEY` must be in the environment. No other config needed.
 
 ### Config
 
 | Field | Meaning |
 |---|---|
 | `dshHome` | Harness home holding the `meta` judge-budget file. Required; empty fails loud at load. |
-| `judgeUrl` | Judge base URL. Default `https://opencode.ai/zen/go/v1`. |
-| `judgeModel` | Judge model id on the wire. Default `muse-spark-1.3-contributor`. |
-| `api` | Wire protocol: `openai-responses` (Go route) or `openai-completions` (chat-style endpoints). Default `openai-responses`. |
-| `sessionHeader` | Value sent as `x-opencode-session` on the responses protocol (the Go route refuses requests without it). Default `valjas-approval-gate`. |
-| `apiKeyEnv` | Environment variable NAME holding the judge bearer key. Resolved per request, never stored; default `OPENCODE_GO_API_KEY`. Absent key degrades to `next()`. |
+| `judgeBackend` | `jev` (default) or `llm` (generative fallback). |
+| `jevUrl` | Jev System One endpoint (full path). Default `https://api.typesafe.ai/v1/systemone`. |
+| `jevModel` | Alias (`jev-preview`, default) or versioned pin (`jev-1.14.0`). The versioned id that answered is ledgered per decision — pin it once a threshold is tuned against it. |
+| `jevKeyEnv` | Env var holding the Jev bearer key. Default `TYPESAFE_KEY`. Absent key degrades to `next()`. |
+| `escalateBelow` | Jev `allow` below this top-probability delegates onward (default 0.6). `reject` is never softened. |
+| `judgeUrl` | `llm` backend base URL. Default `https://opencode.ai/zen/go/v1`. |
+| `judgeModel` | `llm` backend model id. Default `muse-spark-1.3-contributor`. |
+| `api` | `llm` backend wire protocol: `openai-responses` (default) or `openai-completions`. |
+| `sessionHeader` | Value sent as `x-opencode-session` on the responses protocol. Default `valjas-approval-gate`. |
+| `apiKeyEnv` | `llm` backend key env var. Default `OPENCODE_GO_API_KEY`. Absent key degrades to `next()`. |
 | `timeoutMs` | Judge abort bound. Default 45000. |
 | `maxCallsPerDay` | Judge calls per UTC date. Default 50; spent budgets degrade to `next()`. |
 
@@ -50,7 +56,7 @@ Mount the plugin where escalation asks need answers and no human is composed (he
 
 1. **Blacklist** (`src/gate.ts`): exact-deny patterns (`rm -rf /`, `mkfs`, `dd … of=/dev/`, fork bombs, `curl|wget … | sh`, device redirects, `chmod -R 777 /`, power commands) → `rejected`.
 2. **Allowlist**: whole-command anchored allow for the boring-read-only class (`ls`, `cat`, `echo`, `pwd`, read-only `git` porch) with every shell metacharacter banned → `allowed-once`. Anything piped, redirected, chained, or substituted falls through by construction.
-3. **Judge** (`src/judge.ts`): one fixed-shape call over the command plus cwd, target mode, and justification — never a transcript. Speaks `openai-responses` (Go route, `reasoning.effort: low`) or `openai-completions`. Schema-clean allow/reject only; every fault degrades to `next()`.
+3. **Judge** — `jev` backend by default (`src/jev.ts`): one typed `Choice` (allow/reject) over the command plus cwd, target mode, and justification — never a transcript. Returns calibrated probabilities with the versioned model id; `allow` below `escalateBelow` delegates to a human, `reject` is never softened, every fault degrades to `next()`. The `llm` backend (`src/judge.ts`) keeps the generative route over `openai-responses` (Go, `reasoning.effort: low`) or `openai-completions`, with the same degrade rule. Failure order mirrors Hermes's jev-guardian: Jev error → generative judge → delegate.
 
 ### Outcome contract (every ask ends in exactly one of these)
 
@@ -59,6 +65,7 @@ Mount the plugin where escalation asks need answers and no human is composed (he
 | Blacklist match | `rejected` | `blacklist` / `rejected` |
 | Allowlist match | `allowed-once` | `allowlist` / `allowed-once` |
 | Judge allow / reject | `allowed-once` / `rejected` | `judge` / outcome + grounds + latency |
+| Jev allow below `escalateBelow` | downstream `next()` result | `judge` / `uncertain` assessment, then `delegate` / downstream outcome + `uncertain` reason |
 | Anything else (non-bash, unrecoverable command, no key, spent budget, judge fault, internal exception) | downstream `next()` result — with no other answerer mounted, upstream resolves `unavailable` | `delegate` / downstream outcome + reason |
 
 Fail-closed throughout: the only grant is `allowed-once`, the gate never throws out of the waterfall, the judge is bounded by `timeoutMs`, and a ledger fault can never change an outcome (worst case: a missing line).
@@ -96,7 +103,8 @@ The ask payload carries no command — only the model's justification — so the
 
 - `src/index.ts` — function plugin (`name`/`inject`/`Config`/`apply`, no default export): firehose tap, waterfall answerer, fail-closed config resolution.
 - `src/gate.ts` — pure deterministic layers (blacklist, allowlist, command recovery); unit-tested without cordis.
-- `src/judge.ts` — bounded verdict call over an injectable fetch, both wire protocols; every fault degrades to `undefined`.
+- `src/judge.ts` — generative verdict call over an injectable fetch, both wire protocols; every fault degrades to `undefined`.
+- `src/jev.ts` — typed Jev `Choice` over an injectable fetch; calibration and versioned model id pass through; every fault degrades to `undefined`.
 - `src/budget.ts` — daily counter file under `$DSH_HOME/meta`; corrupt files reset, spent budgets refuse without writing.
 - `src/ledger.ts` — append-only decision ledger under `$DSH_HOME/meta/approver-decisions.jsonl`; command shapes only, never raw text; never throws.
 - `src/types.ts` — types only.
@@ -106,7 +114,7 @@ The ask payload carries no command — only the model's justification — so the
 <a id="dev-note"></a>
 ## Dev Note
 
-Coverage expectation is per-file 100%: `tests/gate.spec.ts` pins the deny/allow matrix (including chained sneaks and scoped-delete fall-through), `tests/judge.spec.ts` drives every fault through an injected fetch, `tests/budget.spec.ts` covers the counter lifecycle against tmp homes, `tests/ledger.spec.ts` covers classification, ledger fault-swallowing, and wired claim/delegate lines, and `tests/composition.spec.ts` decides through the real approval service plus a Loader boot of the shipped shape.
+Coverage expectation is per-file 100%: `tests/gate.spec.ts` pins the deny/allow matrix (including chained sneaks and scoped-delete fall-through), `tests/judge.spec.ts` drives every fault through an injected fetch on both wire protocols, `tests/jev.spec.ts` covers Choice parsing, calibration passthrough, and fault-swallowing, `tests/budget.spec.ts` covers the counter lifecycle against tmp homes, `tests/ledger.spec.ts` covers classification, ledger fault-swallowing, and wired claim/delegate lines, and `tests/composition.spec.ts` decides through the real approval service (both backends, including the never-soften-reject and uncertain-delegate rules) plus a Loader boot of the shipped shape.
 
 <a id="further-exploration"></a>
 ## Further Exploration

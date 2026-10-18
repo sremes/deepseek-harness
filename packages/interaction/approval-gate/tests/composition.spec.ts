@@ -81,6 +81,7 @@ let context: Context | undefined
 afterEach(async () => {
   vi.unstubAllGlobals()
   delete process.env['APPROVAL_GATE_TEST_KEY']
+  delete process.env['JEV_GATE_TEST_KEY']
   await context?.fiber.dispose()
   context = undefined
   if (root !== undefined) await rm(root, { recursive: true, force: true })
@@ -100,15 +101,31 @@ async function mounted(home: string, config: Record<string, unknown> = {}): Prom
   return context
 }
 
+/** Mounted with the Jev backend and an isolated key name (never the real TYPESAFE_KEY). */
+async function mountedJev(home: string, config: Record<string, unknown> = {}): Promise<Context> {
+  context = new Context()
+  await context.plugin(ApprovalService)
+  await context.plugin(GatePlugin, { dshHome: home, jevKeyEnv: 'JEV_GATE_TEST_KEY', ...config })
+  return context
+}
+
 describe('resolveGateConfig', () => {
   it('fails loud on an empty home or key name', () => {
     expect(() => resolveGateConfig({ dshHome: '' })).toThrow(/dshHome/)
     expect(() => resolveGateConfig({} as { dshHome: string })).toThrow(/dshHome/)
     expect(() => resolveGateConfig({ dshHome: '/h', apiKeyEnv: '' })).toThrow(/apiKeyEnv/)
+    expect(() => resolveGateConfig({ dshHome: '/h', jevKeyEnv: '' })).toThrow(/jevKeyEnv/)
+    expect(() => resolveGateConfig({ dshHome: '/h', judgeBackend: 'oracle' as never })).toThrow(/judgeBackend/)
+    expect(() => resolveGateConfig({ dshHome: '/h', escalateBelow: 1.5 })).toThrow(/escalateBelow/)
   })
 
   it('resolves documented defaults', () => {
     expect(resolveGateConfig({ dshHome: '/h' })).toMatchObject({
+      judgeBackend: 'jev',
+      jevUrl: 'https://api.typesafe.ai/v1/systemone',
+      jevModel: 'jev-preview',
+      jevKeyEnv: 'TYPESAFE_KEY',
+      escalateBelow: 0.6,
       judgeUrl: 'https://opencode.ai/zen/go/v1',
       judgeModel: 'muse-spark-1.3-contributor',
       api: 'openai-responses',
@@ -171,7 +188,7 @@ describe('gate plugin wiring', () => {
   it('judges the rest through the stubbed route', async () => {
     const home = await freshHome()
     process.env['APPROVAL_GATE_TEST_KEY'] = 'test-key'
-    const loaded = await mounted(home)
+    const loaded = await mounted(home, { judgeBackend: 'llm' })
     await announce(loaded, 'c-ok', 'vitest run x')
     await announce(loaded, 'c-no', 'npm test')
     const { agent } = fakeAgent()
@@ -187,7 +204,7 @@ describe('gate plugin wiring', () => {
 
   it('delegates judge faults, missing keys, and spent budgets', async () => {
     const home = await freshHome()
-    const loaded = await mounted(home, { maxCallsPerDay: 1 })
+    const loaded = await mounted(home, { judgeBackend: 'llm', maxCallsPerDay: 1 })
     await announce(loaded, 'c-fault', 'vitest run x')
     await announce(loaded, 'c-spent', 'vitest run y')
     const { agent } = fakeAgent()
@@ -212,7 +229,7 @@ describe('gate plugin wiring', () => {
   it('contains a store failure inside the request', async () => {
     const home = await freshHome()
     process.env['APPROVAL_GATE_TEST_KEY'] = 'test-key'
-    const loaded = await mounted(home)
+    const loaded = await mounted(home, { judgeBackend: 'llm' })
     await announce(loaded, 'c-ro', 'vitest run x')
     mkdirSync(join(home, 'meta'), { recursive: true })
     chmodSync(join(home, 'meta'), 0o555)
@@ -229,7 +246,7 @@ describe('gate plugin wiring', () => {
   it('reads cwd when present and ignores non-string roots', async () => {
     const home = await freshHome()
     process.env['APPROVAL_GATE_TEST_KEY'] = 'test-key'
-    const loaded = await mounted(home)
+    const loaded = await mounted(home, { judgeBackend: 'llm' })
     await announce(loaded, 'c-cwd', 'vitest run x')
     stubJudge(verdictBody('allow', 'fine'))
     const { agent } = fakeAgent({ cwd: '/w' })
@@ -245,7 +262,7 @@ describe('gate plugin wiring', () => {
   it('degrades an unmarked reason with a failing judge', async () => {
     const home = await freshHome()
     process.env['APPROVAL_GATE_TEST_KEY'] = 'test-key'
-    const loaded = await mounted(home)
+    const loaded = await mounted(home, { judgeBackend: 'llm' })
     await announce(loaded, 'c-bare', 'vitest run x')
     stubJudge({}, 500)
     const { agent } = fakeAgent()
@@ -266,6 +283,95 @@ describe('gate plugin wiring', () => {
     ).resolves.toBe('allowed-once')
     await expect(
       loaded.approval.request(requestOf(agent, { callId: ToolCallId('cap-500'), reason: 'need echo' })),
+    ).resolves.toBe('unavailable')
+  })
+})
+
+describe('jev backend wiring', () => {
+  function jevStub(choice: unknown, top: number, confidence = 0.9, model = 'jev-1.14.0'): void {
+    vi.stubGlobal(
+      'fetch',
+      async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          model,
+          answers: {
+            verdict: {
+              type: 'choice',
+              choice,
+              probabilities: { allow: choice === 'allow' ? top : 1 - top, reject: choice === 'reject' ? top : 1 - top },
+              confidence,
+            },
+          },
+        }),
+      }),
+    )
+  }
+
+  it('allows confident allows and ledgers the versioned model id', async () => {
+    const home = await freshHome()
+    process.env['JEV_GATE_TEST_KEY'] = 'test-key'
+    const loaded = await mountedJev(home)
+    await announce(loaded, 'c-jev-ok', 'npm test')
+    jevStub('allow', 0.92)
+    const { agent } = fakeAgent({ cwd: '/w' })
+    await expect(
+      loaded.approval.request(requestOf(agent, { callId: ToolCallId('c-jev-ok'), reason: 'need tests' })),
+    ).resolves.toBe('allowed-once')
+    const { readFile } = await import('node:fs/promises')
+    const { join: joinPath } = await import('node:path')
+    const lines = (await readFile(joinPath(home, 'meta', 'approver-decisions.jsonl'), 'utf8')).trim().split('\n')
+    expect(lines).toHaveLength(1)
+    expect(JSON.parse(lines[0] as string)).toMatchObject({ layer: 'judge', outcome: 'allowed-once', judgeModel: 'jev-1.14.0' })
+  })
+
+  it('never softens reject, even at low top-probability', async () => {
+    const home = await freshHome()
+    process.env['JEV_GATE_TEST_KEY'] = 'test-key'
+    const loaded = await mountedJev(home)
+    await announce(loaded, 'c-jev-no', 'env | grep SECRET_KEY')
+    jevStub('reject', 0.52, 0.4)
+    const { agent } = fakeAgent()
+    await expect(
+      loaded.approval.request(requestOf(agent, { callId: ToolCallId('c-jev-no'), reason: 'need secrets' })),
+    ).resolves.toBe('rejected')
+  })
+
+  it('delegates uncertain allows and records both the assessment and the outcome', async () => {
+    const home = await freshHome()
+    process.env['JEV_GATE_TEST_KEY'] = 'test-key'
+    const loaded = await mountedJev(home)
+    await announce(loaded, 'c-jev-maybe', 'npm test')
+    jevStub('allow', 0.55, 0.18)
+    const { agent } = fakeAgent()
+    await expect(
+      loaded.approval.request(requestOf(agent, { callId: ToolCallId('c-jev-maybe'), reason: 'need tests' })),
+    ).resolves.toBe('unavailable')
+    const { readFile } = await import('node:fs/promises')
+    const { join: joinPath } = await import('node:path')
+    const lines = (await readFile(joinPath(home, 'meta', 'approver-decisions.jsonl'), 'utf8')).trim().split('\n')
+      .map(line => JSON.parse(line) as { layer: unknown; outcome: unknown; reason?: unknown })
+    expect(lines.map(line => [line.layer, line.outcome])).toEqual([
+      ['judge', 'uncertain'],
+      ['delegate', 'unavailable'],
+    ])
+    expect(lines[1]?.reason).toBe('uncertain')
+  })
+
+  it('delegates jev faults and missing keys', async () => {
+    const home = await freshHome()
+    process.env['JEV_GATE_TEST_KEY'] = 'test-key'
+    const loaded = await mountedJev(home)
+    await announce(loaded, 'c-jev-fault', 'npm test')
+    vi.stubGlobal('fetch', async () => ({ ok: false, status: 429, json: async () => ({}) }))
+    const { agent } = fakeAgent()
+    await expect(
+      loaded.approval.request(requestOf(agent, { callId: ToolCallId('c-jev-fault'), reason: 'need tests' })),
+    ).resolves.toBe('unavailable')
+    delete process.env['JEV_GATE_TEST_KEY']
+    await expect(
+      loaded.approval.request(requestOf(agent, { callId: ToolCallId('c-jev-fault'), reason: 'need tests' })),
     ).resolves.toBe('unavailable')
   })
 })

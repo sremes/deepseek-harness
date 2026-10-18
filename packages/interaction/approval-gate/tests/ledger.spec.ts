@@ -85,7 +85,7 @@ describe('gate decision ledger wiring', () => {
     const home = await freshHome()
     context = new Context()
     await context.plugin(ApprovalService)
-    await context.plugin(GatePlugin, { dshHome: home, apiKeyEnv: 'APPROVAL_GATE_TEST_KEY' })
+    await context.plugin(GatePlugin, { dshHome: home, judgeBackend: 'llm', apiKeyEnv: 'APPROVAL_GATE_TEST_KEY' })
     const secret = 'echo sk-secret-xyz-123'
     await context.emit('session/event', {} as never, {
       type: 'tool/call',

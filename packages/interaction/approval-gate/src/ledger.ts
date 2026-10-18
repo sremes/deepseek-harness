@@ -34,6 +34,7 @@ export type DelegateReason =
   | 'no-key'
   | 'budget-spent'
   | 'judge-fault'
+  | 'uncertain'
   | 'exception'
 
 /** One ledger line. `outcome` is the gate's own answer, except on `delegate`

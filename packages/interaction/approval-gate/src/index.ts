@@ -23,6 +23,7 @@ import type {} from '@deepseek-ai/dsh-user-approval'
 import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval'
 import { allowlisted, commandForCall, isBlacklisted } from './gate.ts'
 import { judgeCommand } from './judge.ts'
+import { jevVerdict } from './jev.ts'
 import { takeBudget } from './budget.ts'
 import { classifyCommand, recordDecision } from './ledger.ts'
 import type { DelegateReason, DecisionLayer } from './ledger.ts'
@@ -40,13 +41,26 @@ export const MAX_OBSERVED_CALLS = 500
 /** Judge input command bound (the model justification rides verbatim). */
 export const MAX_JUDGE_COMMAND_CHARS = 2000
 
+/** Judge backend: a typed Jev decision or a raw generative-LLM verdict. */
+export type JudgeBackend = 'jev' | 'llm'
+
 /** Plugin configuration: home plus the judge route and budgets. No secrets here. */
 export interface Config {
   /** Harness home holding the `meta` ledger and budget files. Required; fails loud when empty. */
   dshHome: string
-  /** Judge base URL (no trailing path). */
+  /** Which judge answers: Jev (default) or a generative LLM route. */
+  judgeBackend?: JudgeBackend
+  /** Jev System One endpoint URL (full path). */
+  jevUrl?: string
+  /** Jev model id: alias (`jev-preview`) or versioned pin (`jev-1.14.0`). */
+  jevModel?: string
+  /** Environment variable NAME holding the Jev bearer key (resolved per request, never stored). */
+  jevKeyEnv?: string
+  /** Jev `allow` below this top-probability delegates onward; `reject` is never softened. */
+  escalateBelow?: number
+  /** Judge base URL (no trailing path) for the `llm` backend. */
   judgeUrl?: string
-  /** Judge model id on the wire. */
+  /** Judge model id on the wire for the `llm` backend. */
   judgeModel?: string
   /** Wire protocol: completions for chat-style endpoints, responses for the Go route. */
   api?: 'openai-completions' | 'openai-responses'
@@ -62,6 +76,11 @@ export interface Config {
 
 export const Config: z<Config> = z.object({
   dshHome: z.string(),
+  judgeBackend: z.union(['jev', 'llm'] as const).default('jev'),
+  jevUrl: z.string().default('https://api.typesafe.ai/v1/systemone'),
+  jevModel: z.string().default('jev-preview'),
+  jevKeyEnv: z.string().default('TYPESAFE_KEY'),
+  escalateBelow: z.number().min(0).max(1).default(0.6),
   judgeUrl: z.string().default('https://opencode.ai/zen/go/v1'),
   judgeModel: z.string().default('muse-spark-1.3-contributor'),
   api: z.union(['openai-completions', 'openai-responses'] as const).default('openai-responses'),
@@ -75,9 +94,19 @@ export const Config: z<Config> = z.object({
 export interface GateConfig {
   /** Harness home holding the `meta` ledger and budget files. */
   readonly dshHome: string
-  /** Judge base URL (no trailing path). */
+  /** Which judge answers. */
+  readonly judgeBackend: JudgeBackend
+  /** Jev System One endpoint URL (full path). */
+  readonly jevUrl: string
+  /** Jev model id. */
+  readonly jevModel: string
+  /** Environment variable NAME holding the Jev bearer key. */
+  readonly jevKeyEnv: string
+  /** Jev `allow` below this top-probability delegates onward. */
+  readonly escalateBelow: number
+  /** Judge base URL (no trailing path) for the `llm` backend. */
   readonly judgeUrl: string
-  /** Judge model id on the wire. */
+  /** Judge model id on the wire for the `llm` backend. */
   readonly judgeModel: string
   /** Wire protocol the judge speaks. */
   readonly api: 'openai-completions' | 'openai-responses'
@@ -101,14 +130,29 @@ export interface GateConfig {
 export function resolveGateConfig(config: Config): GateConfig {
   const dshHome = config.dshHome ?? ''
   if (dshHome === '') throw new Error('approval-gate: config.dshHome is required (ledger and budget file home)')
+  const judgeBackend = config.judgeBackend ?? 'jev'
+  if (judgeBackend !== 'jev' && judgeBackend !== 'llm') {
+    throw new Error('approval-gate: config.judgeBackend must be jev or llm')
+  }
   const apiKeyEnv = config.apiKeyEnv ?? 'OPENCODE_GO_API_KEY'
   if (apiKeyEnv === '') throw new Error('approval-gate: config.apiKeyEnv must name the key variable')
+  const jevKeyEnv = config.jevKeyEnv ?? 'TYPESAFE_KEY'
+  if (jevKeyEnv === '') throw new Error('approval-gate: config.jevKeyEnv must name the key variable')
+  const escalateBelow = config.escalateBelow ?? 0.6
+  if (!Number.isFinite(escalateBelow) || escalateBelow < 0 || escalateBelow > 1) {
+    throw new Error('approval-gate: config.escalateBelow must be within 0..1')
+  }
   const api = config.api ?? 'openai-responses'
   if (api !== 'openai-completions' && api !== 'openai-responses') {
     throw new Error('approval-gate: config.api must be openai-completions or openai-responses')
   }
   return {
     dshHome,
+    judgeBackend,
+    jevUrl: config.jevUrl ?? 'https://api.typesafe.ai/v1/systemone',
+    jevModel: config.jevModel ?? 'jev-preview',
+    jevKeyEnv,
+    escalateBelow,
     judgeUrl: config.judgeUrl ?? 'https://opencode.ai/zen/go/v1',
     judgeModel: config.judgeModel ?? 'muse-spark-1.3-contributor',
     api,
@@ -129,7 +173,11 @@ export function resolveGateConfig(config: Config): GateConfig {
 export function apply(ctx: Context, config: Config): void {
   const resolved = resolveGateConfig(config)
   ctx.logger.info(
-    `approval-gate: mounted (judge ${resolved.judgeModel}, budget ${String(resolved.maxCallsPerDay)}/day, home ${resolved.dshHome})`,
+    `approval-gate: mounted (backend ${resolved.judgeBackend}, ` +
+      (resolved.judgeBackend === 'jev'
+        ? `jev ${resolved.jevModel}, escalate below ${String(resolved.escalateBelow)}`
+        : `${resolved.judgeModel}, budget ${String(resolved.maxCallsPerDay)}/day`) +
+      `, home ${resolved.dshHome})`,
   )
   /** Live tool calls by string call id: the ask payload carries none. */
   const calls = new Map<string, ObservedCall>()
@@ -195,6 +243,42 @@ export function apply(ctx: Context, config: Config): void {
         return 'allowed-once'
       }
       const apiKey = process.env[resolved.apiKeyEnv] ?? ''
+      if (resolved.judgeBackend === 'jev') {
+        const jevKey = process.env[resolved.jevKeyEnv] ?? ''
+        if (jevKey === '') {
+          ctx.logger.info(`approval-gate: delegating ${callId} (no ${resolved.jevKeyEnv})`)
+          return delegate(next, 'no-key')
+        }
+        if (!(await takeBudget(resolved.dshHome, resolved.maxCallsPerDay))) {
+          ctx.logger.info(`approval-gate: delegating ${callId} (judge budget spent)`)
+          return delegate(next, 'budget-spent')
+        }
+        const header = (req.agent as unknown as { session: { header?: { cwd?: unknown } } }).session.header
+        const cwd = typeof header?.cwd === 'string' ? header.cwd : ''
+        const mode = /escalate sandbox to ([a-z-]+)/.exec(req.reason ?? '')?.[1] ?? 'unknown-mode'
+        const verdict = await jevVerdict(
+          { command: command.slice(0, MAX_JUDGE_COMMAND_CHARS), cwd, requestedMode: mode, justification: req.reason ?? '' },
+          { url: resolved.jevUrl, model: resolved.jevModel, apiKey: jevKey, timeoutMs: resolved.timeoutMs },
+        )
+        if (verdict === undefined) return delegate(next, 'judge-fault')
+        const detail =
+          `jev ${verdict.choice} top=${verdict.top.toFixed(2)} conf=${verdict.confidence.toFixed(2)}`
+        if (verdict.choice === 'reject') {
+          ctx.logger.info(`approval-gate: jev reject for ${callId}: ${detail}`)
+          await claim('judge', 'rejected', shape, { grounds: detail, judgeModel: verdict.model, latencyMs: verdict.latencyMs })
+          return 'rejected'
+        }
+        if (verdict.top < resolved.escalateBelow) {
+          ctx.logger.info(`approval-gate: jev uncertain for ${callId}: ${detail}`)
+          await recordDecision(resolved.dshHome, {
+            layer: 'judge', outcome: 'uncertain', grounds: detail, judgeModel: verdict.model, latencyMs: verdict.latencyMs, ...shape,
+          })
+          return delegate(next, 'uncertain')
+        }
+        ctx.logger.info(`approval-gate: jev allow for ${callId}: ${detail}`)
+        await claim('judge', 'allowed-once', shape, { grounds: detail, judgeModel: verdict.model, latencyMs: verdict.latencyMs })
+        return 'allowed-once'
+      }
       if (apiKey === '') {
         ctx.logger.info(`approval-gate: delegating ${callId} (no ${resolved.apiKeyEnv})`)
         return delegate(next, 'no-key')
