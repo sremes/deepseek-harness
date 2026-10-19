@@ -10,6 +10,9 @@ function proposalFor(overrides: Partial<EvaluatorProposal>): EvaluatorProposal {
     triggerSignature: 'destructive-path-confirm',
     triggerConditions: 'Use when a task deletes or overwrites paths outside a scratch directory',
     platform: 'dsh-headless',
+    // L1 checks clause shapes only and never consumes evidence; the empty
+    // array satisfies the required field without implying grounding.
+    evidence: [],
     ...overrides,
   }
 }
