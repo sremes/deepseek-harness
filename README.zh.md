@@ -44,6 +44,53 @@ pnpm dsh web
 
 `pnpm run build` 会准备仓库产物。`pnpm dsh web` 会直接使用这些已构建产物，不会重新构建。
 
+## Valjas 分支
+
+Valjas（芬兰语，意为"harness"）是 DeepSeek Harness 的一个分支，用于试验自我改进的配置：让 agent 从自己的会话中学习可复用的技能。上文内容依然适用；本节只介绍该分支新增的内容。
+
+### 分支新增了什么
+
+- **从会话中学习（`dsh-session-meta`）。** 为每个会话在 `$DSH_HOME/meta/meta.db` 中记录一行摘要，并把会话分成三类：`track_a`（值得学习：成功挽回的错误或人类的纠正）、`track_b`（值得复现的崩溃或 bug）、`no_op`（无学习价值）。记录功能随基础 bundle 默认开启。完整说明见 [session-meta README](packages/session/session-meta/README.md)。
+- **试运行技能草稿（`dsh-session-meta-replay`）。** 在技能上线前，用原任务把它跑一遍（分别测试有技能和无技能两种情况）。runner 由宿主装配；没有 runner 时草稿跳过试运行直接上线。完整说明见 [session-meta-replay README](packages/session/session-meta-replay/README.md)。
+- **无人值守的审批（`dsh-approval-gate`）。** 在没有人类盯着时（headless 运行、CI）回答终端权限请求：拦截一小批危险命令，放行无聊的只读命令（`ls`、`cat`、`git status`），其余交给一个小型 AI 裁判；拿不准的一律转给人类。默认不挂载。完整说明见 [approval-gate README](packages/interaction/approval-gate/README.md)。
+
+入库前会清除密钥：数据库里没有密钥，命令只记录形状（比如 `git`、3 个参数），从不存原文。
+
+### 开启学习
+
+记录功能开箱即用。教学功能需要手动开启：负责提议技能的 evaluator 在你指定模型路线之前一直处于关闭状态：
+
+```yaml
+- name: '@deepseek-ai/dsh-session-meta'
+  config:
+    dshHome: !!js process.env.DSH_HOME
+    evaluator:
+      enabled: true
+      provider: <your-llm-route>
+      model: <your-model>
+```
+
+默认值刻意收得很紧：每天一次 evaluator 调用，每周最多新增三个技能，每天最多八次重放。全部参数见 [session-meta README](packages/session/session-meta/README.md#use-this-package)。
+
+日常使用只需要文件和一条查询：
+
+- 把纠正意见写成 JSON，丢进 `$DSH_HOME/meta/steering/`，就能事后教学（"今后一律……"）。
+- 把 `{ "reason": "..." }` 写成 `<技能主题>.json`，丢进 `$DSH_HOME/meta/invalidate/`，即可退役过时的技能。
+- 用 `SELECT route, COUNT(*) FROM meta_sessions GROUP BY route;` 查询 `$DSH_HOME/meta/meta.db`，查看进展。
+
+只有后台主机（例如 nightly cron）才设 `driveOnBoot: true`；交互式会话保持 `false`。
+
+### 无人审批
+
+```yaml
+- name: '@deepseek-ai/dsh-user-approval'
+- name: '@deepseek-ai/dsh-approval-gate'
+  config:
+    dshHome: !!js process.env.DSH_HOME
+```
+
+默认裁判需要在环境变量中提供 `TYPESAFE_KEY`。完整参数表和调参规则见 [approval-gate README](packages/interaction/approval-gate/README.md#use-this-package)。
+
 ## 社区与支持
 
 - 通过 [GitHub Discussions](https://github.com/deepseek-ai/deepseek-harness/discussions) 提交反馈或 bug 报告。

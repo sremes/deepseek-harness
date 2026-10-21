@@ -40,6 +40,53 @@ pnpm dsh web
 
 `pnpm run build` prepares the repository artifacts. `pnpm dsh web` uses those built artifacts without rebuilding.
 
+## Valjas fork
+
+Valjas (Finnish for "harness") is a fork of DeepSeek Harness that experiments with a self-improving setup: the agent learns reusable skills from its own sessions. Everything above still applies; this section covers only what the fork adds.
+
+### What the fork adds
+
+- **Learning from sessions (`dsh-session-meta`).** Records one summary row per session in `$DSH_HOME/meta/meta.db` and sorts sessions into `track_a` (worth learning from: a recovery or a human correction), `track_b` (a crash or bug worth reproducing), or `no_op`. Recording ships in the base bundle, so it is on by default. Contract: [session-meta README](packages/session/session-meta/README.md).
+- **Testing skill drafts (`dsh-session-meta-replay`).** Replays a proposed skill against its original task, with and without the skill, before it goes live. The host wires the runner; without one, drafts promote without replay. Contract: [session-meta-replay README](packages/session/session-meta-replay/README.md).
+- **Unattended approvals (`dsh-approval-gate`).** Answers terminal-permission prompts when no human is watching (headless runs, CI): it blocks a short list of dangerous commands, allows boring read-only ones (`ls`, `cat`, `git status`), and asks a small AI judge about the rest. Anything unclear falls through to a human. Not mounted by default. Contract: [approval-gate README](packages/interaction/approval-gate/README.md).
+
+Secrets are scrubbed before anything is stored: the database never sees them, and commands are logged as shapes (`git`, 3 args), never raw text.
+
+### Turning on learning
+
+Recording needs no setup. Teaching does: the evaluator that proposes skills stays off until you point it at a model route:
+
+```yaml
+- name: '@deepseek-ai/dsh-session-meta'
+  config:
+    dshHome: !!js process.env.DSH_HOME
+    evaluator:
+      enabled: true
+      provider: <your-llm-route>
+      model: <your-model>
+```
+
+The defaults are tight on purpose: one evaluator call per day, at most three new skills per week, eight replay runs per day. Every knob is listed in the [session-meta README](packages/session/session-meta/README.md#use-this-package).
+
+Day to day, the loop runs on files and one query:
+
+- Teach after the fact by dropping a correction note as JSON into `$DSH_HOME/meta/steering/` ("from now on, always …").
+- Retire a skill the world has outgrown by dropping `{ "reason": "..." }` into `$DSH_HOME/meta/invalidate/` under the file name `<skill-topic>.json`.
+- Check progress with `SELECT route, COUNT(*) FROM meta_sessions GROUP BY route;` against `$DSH_HOME/meta/meta.db`.
+
+Set `driveOnBoot: true` only on background hosts such as a nightly cron job; interactive sessions leave it at `false`.
+
+### Approvals without a human
+
+```yaml
+- name: '@deepseek-ai/dsh-user-approval'
+- name: '@deepseek-ai/dsh-approval-gate'
+  config:
+    dshHome: !!js process.env.DSH_HOME
+```
+
+The default judge needs `TYPESAFE_KEY` in the environment. The full option table and tuning rules live in the [approval-gate README](packages/interaction/approval-gate/README.md#use-this-package).
+
 ## Community and support
 
 - Submit feedback or bug reports through [GitHub Discussions](https://github.com/deepseek-ai/deepseek-harness/discussions).
