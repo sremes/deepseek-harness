@@ -1,5 +1,5 @@
 /**
- * M3 replay-driver seam (Plan-V1 §4.1 L2/L3 + Q15): dependency-free replay
+ * Replay-driver seam (validation gates L2/L3): dependency-free replay
  * outcome data, the structural runner seam an SDK-backed driver implements
  * later, a scripted fake for unit tests, the pure harm-veto comparison, and
  * the compact summary builder feeding `judgePair`.

@@ -1,6 +1,6 @@
 /**
- * Pure `RunResult`-to-`ReplayOutcome` mapping for the M3 replay driver
- * (Plan-V1 §4.1 L2/L3): fold one owned activity interval into the outcome
+ * Pure `RunResult`-to-`ReplayOutcome` mapping for the replay driver
+ * (validation gates L2/L3): fold one owned activity interval into the outcome
  * data the harm veto and the pairwise judge read. No I/O, no imports beyond
  * the `SessionEvent` type.
  *
@@ -39,7 +39,7 @@ function isSteeringUserMessage(event: Extract<SessionEvent, { type: 'user/messag
  *
  * - `completed` reads the last `turn/end` reason: true only for the
  *   `completed` kind. The literal duplicates the one `isCompletedTurnEnd`
- *   checks in `packages/session/session-meta/src/projection.ts` (M2.2 single
+ *   checks in `packages/session/session-meta/src/projection.ts` (one shared
  *   completion definition); a run with no `turn/end` never completed.
  * - `turnEnd` is that reason's kind verbatim, or null without one.
  * - `steeringCount` counts source-marked human `user/message` events after
@@ -81,7 +81,7 @@ export function mapRunResultToOutcome(events: SessionEvent[], finalResponse: str
       }
     }
   }
-  // Single completion definition (M2.2): kept as a literal beside the
+  // Single shared completion definition: kept as a literal beside the
   // `projection.isCompletedTurnEnd` predicate it duplicates, so the two stay
   // greppable as one rule.
   const completed = turnEnd === 'completed'

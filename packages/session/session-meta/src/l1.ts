@@ -1,5 +1,5 @@
 /**
- * M3 L1 self-test gate (Plan-V1 §4.1): deterministic check that a proposal's
+ * Self-test gate (L1): deterministic check that a proposal's
  * Prescribed Pattern is even weakly operationalizable. A Prescribed clause is
  * mechanically checkable when it either names a tool observed in the
  * motivating session or quotes inline code. Forbidden clauses are out of

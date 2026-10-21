@@ -1,8 +1,8 @@
 /**
- * Gated skill-draft writer (Plan-V1 §3.3/M2): persists an evaluator proposal
+ * Gated skill-draft writer: persists an evaluator proposal
  * as a `SKILL.md` draft under the user skill root with
  * `disable-model-invocation: true` — the draft stays user-only until the
- * M3 pipeline flips the flag. Rendering is pure; only `writeSkillDraft`
+ * The validation pipeline flips the flag. Rendering is pure; only `writeSkillDraft`
  * touches the filesystem, creates directories, and guarantees it never
  * overwrites an existing skill.
  */
@@ -11,7 +11,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { EvaluatorProposal, SkillDraft } from './types.ts'
 
-/** Provenance recorded into the draft frontmatter (EvoDAG-lite, Plan-V1 §4). */
+/** Provenance recorded into the draft frontmatter. */
 export interface DraftProvenance {
   readonly sessions: readonly string[]
   readonly mode: string
@@ -27,7 +27,7 @@ export const DISABLE_MODEL_INVOCATION_LINE = 'disable-model-invocation: true'
 export const DRAFT_ONLY_FOOTER = 'Draft only: model invocation is disabled until the promotion pipeline passes.'
 
 /** Promoted footer sentence, carrying the provenance pointer. */
-export const PROMOTED_FOOTER = 'Promoted by the M3 pipeline; provenance above.'
+export const PROMOTED_FOOTER = 'Promoted by the learning loop; provenance above.'
 
 /**
  * Slugify free text into the skill-name grammar

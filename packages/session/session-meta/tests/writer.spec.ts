@@ -133,7 +133,7 @@ describe('promoteDraftFile', () => {
     expect(text).not.toContain('disable-model-invocation: true')
     expect(text).toContain('version: 2')
     expect(text).not.toContain('Draft only: model invocation is disabled until the promotion pipeline passes.')
-    expect(text).toContain('Promoted by the M3 pipeline; provenance above.')
+    expect(text).toContain('Promoted by the learning loop; provenance above.')
   })
 
   it('throws when the flag line is absent', async () => {
@@ -165,6 +165,6 @@ describe('promoteDraftFile', () => {
     promoteDraftFile(draft.dir)
     const text = readFileSync(draft.file, 'utf8')
     expect(text).not.toContain('Draft only: model invocation is disabled until the promotion pipeline passes.')
-    expect(text).toContain('Promoted by the M3 pipeline; provenance above.')
+    expect(text).toContain('Promoted by the learning loop; provenance above.')
   })
 })

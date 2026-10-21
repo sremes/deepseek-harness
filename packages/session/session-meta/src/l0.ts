@@ -1,5 +1,5 @@
 /**
- * M3 L0 contract gate (Plan-V1 §4.1): deterministic validation of a rendered
+ * Contract gate (L0): deterministic validation of a rendered
  * `SKILL.md` draft as emitted by `writer.ts`. Every check is mechanical — no
  * LLM involved. A draft passes only when its frontmatter parses with the
  * required fields, its metadata is present, its Forbidden/Prescribed sections

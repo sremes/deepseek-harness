@@ -1,6 +1,6 @@
 {
   "name": "@deepseek-ai/dsh-session-meta-replay",
-  "description": "SDK-backed replay driver for the dsh-meta learning loop: RunResult-to-outcome mapping plus the candidate/baseline replay runner (dsh-meta M3)",
+  "description": "SDK-backed replay driver for the learning loop: RunResult-to-outcome mapping plus the candidate/baseline replay runner",
   "version": "0.1.2-rc.1",
   "publishConfig": {
     "access": "public"

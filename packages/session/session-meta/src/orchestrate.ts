@@ -1,5 +1,5 @@
 /**
- * Track A offline loop driver (Plan-V1 §3.3/M2): after a steered session
+ * Track A offline loop driver: after a steered session
  * finalizes, gather both steering sources, enforce the daily evaluator
  * budget, run the Flash evaluator over the state projection, and persist
  * the proposal as a pipeline-gated skill draft. Every failure is contained
@@ -73,7 +73,7 @@ export function startOfUtcDay(now: number): number {
 
 /**
  * Whether a finalized session should run the Track A evaluator. Pure:
- * unit-covered without a context. M2.2 effort gate: below `minEvalToolCalls`
+ * unit-covered without a context. Effort gate: below `minEvalToolCalls`
  * with early-only steering and no recovery, the session is trivial (a typo
  * correction, not a learnable workflow) — except explicit persist requests,
  * which always evaluate. Owned here (not index.ts) so the post-hoc steering
@@ -266,7 +266,7 @@ export async function evaluateTrackASession(
 ): Promise<EvaluationOutcome> {
   const fileRecord = loadSteeringFile(deps.home, aggregate.sessionId, deps.log)
   const steering: SteeringRecord[] = [...(fileRecord === undefined ? [] : [fileRecord])]
-  // M2.2: proven recovery is itself evaluable content (success mining) —
+  // Proven recovery is itself evaluable content (success mining) —
   // the evaluator drafts the retry pattern, not a correction.
   if (aggregate.steeringTexts.length === 0 && steering.length === 0 && !hasRecoveredErrors(aggregate)) {
     deps.log(`session-meta: skipping evaluator for ${aggregate.sessionId} (no steering content)`)
@@ -378,7 +378,7 @@ async function runLensPipeline(
   now: number,
   fileRecord: SteeringRecord | undefined,
 ): Promise<EvaluationOutcome> {
-  // M5 invalidation: a retired trigger signature never re-promotes. Checked
+  // Invalidation: a retired trigger signature never re-promotes. Checked
   // after the evaluator reply and before L0 — no draft is written and no
   // L1+ spend follows. Distinct from `declined:no-contrast` (nothing to
   // learn): this means learned, then superseded. The full reason stays in
@@ -395,7 +395,7 @@ async function runLensPipeline(
   }
   mkdirSync(config.skillsDir, { recursive: true })
   const provenance = { sessions: [aggregate.sessionId], mode: aggregate.origin ?? 'unknown' } as const
-  // M3 L0: cheapest layer first — render in memory and veto before any file
+  // Contract gate (L0): cheapest layer first — render in memory and veto before any file
   // lands. The preview slug only feeds the `name:` field (writeSkillDraft
   // may add a numeric suffix); emptiness is unaffected by the suffix.
   const gate = evaluateL0(renderDraft(proposal, provenance, slugify(proposal.triggerSignature)))
@@ -404,7 +404,7 @@ async function runLensPipeline(
     deps.log(`session-meta: draft failed L0 contract for ${aggregate.sessionId}: ${gate.violations.join('; ')}`)
     return { decision: 'l0-rejected', draftSlug: null }
   }
-  // M3 L1: the Prescribed Pattern must hold a mechanically checkable clause
+  // Self-test gate (L1): the Prescribed Pattern must hold a mechanically checkable clause
   // against the motivating session's tool calls. Same veto shape as L0.
   const selfTest = evaluateL1(proposal, projection.steps.map(step => step.tool))
   if (!selfTest.pass) {
@@ -416,7 +416,7 @@ async function runLensPipeline(
     sessions: [aggregate.sessionId],
     mode: aggregate.origin ?? 'unknown',
   })
-  // M3 L2: motivating-task replay (Plan-V1 §4.1) — run the opening task
+  // Replay gate (L2): motivating-task replay — run the opening task
   // with the draft mounted and without it, then veto on harm or on the
   // pairwise judge. Every skip preserves the pre-L2 behavior (promotion
   // proceeds): budget exhaustion skips instead of blocking because no
@@ -464,7 +464,7 @@ async function runLensPipeline(
       }
     }
   }
-  // M3 L3: regression-sample gate (Plan-V1 §4.1) — same A/B shape as L2
+  // Regression gate (L3): same A/B shape as L2
   // against up to 3 past same-trigger_signature sessions. Skips preserve
   // promotion (no re-drive queue exists yet); every veto removes the draft
   // dir, ledgers, and returns.
@@ -511,12 +511,12 @@ async function runLensPipeline(
       }
     }
   }
-  // M3 promotion (Plan-V1 §§3.4/4.1): passing the pipeline IS promotion —
+  // Promotion: passing the pipeline IS promotion —
   // the draft flips to live immediately. Probation is a confidence status
   // (0.40, one -0.15 regression archives), not a waiting room. L4-full
   // weekly (later slice) acts as demote-only. Live flips stay under the
   // weekly blast cap; over-cap passes hold at probation.
-  // Selective per-clause composition (Harness² steal #3): a draft promoting
+  // Selective per-clause composition: a draft promoting
   // under an EXISTING trigger_signature composes instead of overwriting.
   const incumbent = deps.store.getSkill(proposal.triggerSignature)
   if (incumbent !== undefined) {

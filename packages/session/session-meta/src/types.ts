@@ -8,7 +8,7 @@
  * @module @deepseek-ai/dsh-session-meta/types
  */
 
-/** Deterministic triage route for one session (Plan-V1 §3.2). */
+/** Deterministic triage route for one session. */
 export type MetaRoute = 'track_a' | 'track_b' | 'no_op'
 
 /** Triage verdict with machine-checkable reasons. */
@@ -50,9 +50,9 @@ export interface SessionAggregate {
   toolSteps: ToolStep[]
   /** Tool steps observed after the bound filled. */
   truncatedToolSteps: number
-  /** Skill names consulted via the `skill` tool, in order (M2.1: patch-in-place targeting). */
+  /** Skill names consulted via the `skill` tool, in order (targets patch-in-place composition). */
   skillsConsulted: string[]
-  /** Assistant-message count when the first steering arrived (M2.2 effort gate). */
+  /** Assistant-message count when the first steering arrived (effort-gate input). */
   assistantMessagesAtFirstSteering?: number | undefined
   /** Tool-call ids still awaiting their result, mapped to step indexes. */
   pendingToolCalls: Map<string, number>
@@ -63,9 +63,9 @@ export interface ToolStep {
   readonly tool: string
   ok: boolean
   error?: string | undefined
-  /** Redacted, truncated `tool/call.arguments` (M2.1 grounding). */
+  /** Redacted, truncated `tool/call.arguments` (proposal grounding). */
   args?: string | undefined
-  /** Redacted, truncated result text on failed steps (M2.1 grounding). */
+  /** Redacted, truncated result text on failed steps (proposal grounding). */
   resultDigest?: string | undefined
 }
 
@@ -100,7 +100,7 @@ export interface MetaSessionRow {
 
 /**
  * Orchestrator-written correction record
- * (`$DSH_HOME/meta/steering/<session-id>.json`, Plan-V1 §3.3): the headless
+ * (`$DSH_HOME/meta/steering/<session-id>.json`): the headless
  * steering source. Interactive sessions steer through in-session
  * user/messages instead; both normalize to the same evaluator input.
  */
@@ -119,14 +119,14 @@ export interface ProjectionStep {
   readonly error?: string | undefined
   readonly args?: string | undefined
   readonly resultDigest?: string | undefined
-  /** A later same-tool step succeeded (M2.2: draft the retry, not the failure). */
+  /** A later same-tool step succeeded (draft the retry, not the failure). */
   readonly recovered?: boolean | undefined
   /** Args of the later succeeding same-tool step (before/after pair). */
   readonly retryArgs?: string | undefined
 }
 
 /**
- * Structured state projection Σ (Plan-V1 §3.3, SKILL.state note): what was
+ * Structured state projection Σ: what was
  * done, what changed, what failed — per session, never a global schema.
  * The evaluator sees this plus the steering record, never raw history.
  */
@@ -137,9 +137,9 @@ export interface SessionProjection {
   readonly truncatedSteps: number
   readonly errors: readonly string[]
   readonly turnEnd: string | null
-  /** Turn-end kind was `completed` (M2.2: outcome-conditional proposals). */
+  /** Turn-end kind was `completed` (only completed turns yield prescriptions). */
   readonly completed: boolean
-  /** Skill names consulted this session (M2.1: patch-in-place targeting). */
+  /** Skill names consulted this session (targets patch-in-place composition). */
   readonly skillsConsulted: readonly string[]
   readonly steeringTexts: readonly string[]
   readonly counts: {
@@ -150,7 +150,8 @@ export interface SessionProjection {
 }
 
 /**
- * Dual-lens evaluator reply (Harness² steal #2): one model call emits an
+ * Dual-lens evaluator reply (scoped proposers, after Google's Harness²):
+ * one model call emits an
  * invariant lens (cross-domain agentic deficiency: planning, tool use,
  * delegation, verification habits) plus a domain lens (task-specific
  * procedure/constraints). Each lens is independently schema-validated with
@@ -162,8 +163,8 @@ export interface DualEvaluatorProposals {
 }
 
 /**
- * Schema-validated evaluator proposal (Plan-V1 §3.3): the model's output is
- * proposal-only; the writer and (in M3) the L0–L4 pipeline decide.
+ * Schema-validated evaluator proposal: the model's output is
+ * proposal-only; the writer and the validation pipeline decide.
  */
 export interface EvaluatorProposal {
   readonly intent: string
@@ -171,7 +172,7 @@ export interface EvaluatorProposal {
   readonly prescribed: readonly string[]
   readonly triggerSignature: string
   readonly platform: string
-  /** When the skill applies; rendered to `whenToUse` (M2.1 retrieval). */
+  /** When the skill applies; rendered to `whenToUse`. */
   readonly triggerConditions: string
   /**
    * Contrastive grounding: one entry per prescribed/forbidden clause, each
@@ -203,7 +204,7 @@ export interface EvaluatorLedgerRow {
   readonly draftSlug: string | null
 }
 
-/** Lifecycle status of a skill-registry candidate (Plan-V1 §§3.4/4.2). */
+/** Lifecycle status of a skill-registry candidate. */
 export type SkillStatus = 'probation' | 'live' | 'archived'
 
 /** Persisted `skill_registry` row shape, keyed by trigger signature. */
@@ -216,7 +217,7 @@ export interface SkillRegistryRow {
   readonly updatedAt: number
 }
 
-/** Persisted `trackb_runs` row: one M4 spec-runner outcome per emitted spec. */
+/** Persisted `trackb_runs` row: one spec-runner outcome per emitted spec. */
 export interface TrackBRunRow {
   /** Run timestamp (UTC millis, newest-first order key). */
   readonly ts: number
@@ -227,7 +228,7 @@ export interface TrackBRunRow {
 }
 
 /**
- * Plain replay outcome data (M3 L2/L3 seam, Plan-V1 §4.1 + Q15). An SDK
+ * Plain replay outcome data (seam for the L2/L3 replay gates). An SDK
  * adapter later maps `RunResult` events onto this shape; the pipeline only
  * reads these fields.
  */
@@ -240,7 +241,7 @@ export interface ReplayOutcome {
 }
 
 /**
- * Structural replay-runner seam (M3 L2/L3, Plan-V1 §4.1 + Q15).
+ * Structural replay-runner seam for the L2/L3 replay gates.
  * `DeepSeekHarness.run` already has this shape (it returns richer data,
  * structurally assignable where it matters); the SDK-backed runner built
  * later implements this interface.

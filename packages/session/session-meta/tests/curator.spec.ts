@@ -1,5 +1,5 @@
 /**
- * M3 post-promotion lifecycle signals (Plan-V1 §§3.4/4.2): per-session
+ * Post-promotion lifecycle signals: per-session
  * confidence moves plus the 90-day decay sweep, over a real MetaStore and
  * tmp skill directories.
  */

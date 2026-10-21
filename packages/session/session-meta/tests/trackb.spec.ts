@@ -1,5 +1,5 @@
 /**
- * Unit proof for the M4 Track B reproduction emitter plus the M4 spec
+ * Unit proof for the Track B reproduction emitter plus the spec
  * runner: parser-class crashes emit deterministic specs, everything else
  * lands in the breakages register, and clean sessions leave no trace. The
  * runner slice executes emitted specs under the real Vitest binary and
@@ -367,14 +367,14 @@ function payloadAggregate(sessionId: string, args: string): SessionAggregate {
   return aggregate
 }
 
-describe('M4 Track B spec runner acceptance (real vitest)', () => {
+describe('Track B spec runner acceptance (real vitest)', () => {
   // Scratch lives inside the package so the spawned run resolves the
   // `from 'vitest'` import through the workspace node_modules.
   const pkgRoot = dirname(dirname(fileURLToPath(new URL(import.meta.url))))
 
   function realVitestBin(): string {
     const bin = resolveVitestBin(dirname(fileURLToPath(new URL(import.meta.url))))
-    expect(bin, 'M4 acceptance requires a real vitest binary (resolveVitestBin found none)').toBeDefined()
+    expect(bin, 'Track B acceptance requires a real vitest binary (resolveVitestBin found none)').toBeDefined()
     if (bin === undefined) throw new Error('real vitest binary missing')
     return bin
   }

@@ -1,5 +1,5 @@
 /**
- * Deterministic triage router for the session-meta store (Plan-V1 §3.2): no
+ * Deterministic triage router for the session-meta store: no
  * LLM, no heuristics beyond explicit signals. Pure functions over
  * {@link SessionAggregate} so every branch is unit-testable without cordis.
  *
@@ -26,10 +26,10 @@ export const MAX_TOOL_STEPS = 50
 /** Steering texts retained per aggregate; beyond this the oldest drops. */
 export const MAX_STEERING_TEXTS = 10
 
-/** Tool-call argument chars retained per step (M2.1 grounding bound). */
+/** Tool-call argument chars retained per step (proposal-grounding bound). */
 export const MAX_TOOL_ARG_CHARS = 500
 
-/** Result-text chars retained on failed steps (M2.1 grounding bound). */
+/** Result-text chars retained on failed steps (proposal-grounding bound). */
 export const MAX_RESULT_DIGEST_CHARS = 300
 
 /** Skill names retained per aggregate; beyond this later consults drop. */
@@ -121,7 +121,7 @@ export function messageText(data: unknown): string {
   }
 }
 
-/** Track-B class exception names (Plan-V1 §3.2 deterministic set). */
+/** Track-B class exception names (deterministic set). */
 const TRACK_B_ERROR_NAMES: ReadonlySet<string> = new Set([
   'SyntaxError',
   'JSONParseError',
@@ -134,7 +134,7 @@ const TRACK_B_ERROR_NAMES: ReadonlySet<string> = new Set([
  * Environment-blocked error names: setup/sandbox failures, never product
  * faults. `SandboxUnavailableError` is thrown by the shell sandbox backends
  * when no runner backend exists; `MISSING_CREDENTIAL` is raised by the LLM
- * providers when no key resolves. Tag-only (Plan-V1 §5.2): sessions whose
+ * providers when no key resolves. Tag-only: sessions whose
  * every failure signal is env-class keep their route and gain the
  * `env-blocked` reason, so the Track B corpus stays countable without
  * rerouting anything.
@@ -155,7 +155,7 @@ export function observeToolError(aggregate: SessionAggregate, name: string): voi
 
 /** Fold one `tool/call` payload: records the step outcome slot (optimistic
  * ok) and maps its call id for the later result. Pure over the aggregate.
- * M2.1: retains redacted truncated arguments and folds `skill`-tool
+ * Retains redacted truncated arguments and folds `skill`-tool
  * consults for patch-in-place targeting.
  */
 export function observeToolCall(aggregate: SessionAggregate, data: unknown): void {
@@ -223,7 +223,7 @@ export function resultText(data: unknown): string {
 
 /**
  * Whether any steering text is an explicit persist request ("remember
- * this", "from now on", ...). M2.2: bypasses the effort gate — keyword
+ * this", "from now on", ...). Bypasses the effort gate — keyword
  * detection, no LLM.
  */
 export function hasExplicitPersistRequest(texts: readonly string[]): boolean {
@@ -352,7 +352,7 @@ export function triage(aggregate: SessionAggregate): MetaTriage {
   if (structural.length > 0 || aggregate.agentErrors.length > 0 || turnFailed) {
     route = 'track_b'
   } else if (aggregate.toolErrors.length > 0) {
-    // M2.2: recovered errors on a completed turn are procedural memory
+    // Recovered errors on a completed turn are procedural memory
     // (how the session recovered), not structural telemetry. turnFailed is
     // false on this branch, so a present turn-end reason means completed.
     if (aggregate.turnEndReason !== undefined && hasRecoveredErrors(aggregate)) {

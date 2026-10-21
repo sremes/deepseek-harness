@@ -276,7 +276,7 @@ describe('settleSessionMeta', () => {
   })
 })
 
-describe('M2.1 grounding capture', () => {
+describe('proposal grounding capture', () => {
   it('retains redacted truncated tool arguments', () => {
     const aggregate = makeAggregate('s1')
     observeToolCall(aggregate, { name: 'edit', callId: 'c1', arguments: JSON.stringify({ path: '/tmp/f', token: 'sk-abcdefgh1234' }) })

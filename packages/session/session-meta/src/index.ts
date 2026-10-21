@@ -1,5 +1,5 @@
 /**
- * Learning-loop input store for the DeepSeek Harness (dsh-meta M1): taps the
+ * Learning-loop input store for the DeepSeek Harness : taps the
  * session firehose, redacts secrets, folds per-session aggregates, routes
  * them deterministically, and persists one row per session plus bounded
  * evidence into `$DSH_HOME/meta/meta.db`.
@@ -11,7 +11,7 @@
  *   session log is never rewritten; redaction applies to the meta copy only.
  * - Synchronous handlers only aggregate and buffer. SQLite writes happen on
  *   `session/flush` and `session/disposed`, never on the event hot path.
- * - Zero writes to skills: M1 only observes. Promotion lives in M3.
+ * - Zero writes to skills: this package only observes; promotion is separate.
  *
  * @module @deepseek-ai/dsh-session-meta
  */
@@ -63,7 +63,7 @@ export interface Config {
   maxEvidencePerSession?: number
   /** Skill-draft root override; defaults to `$DSH_HOME/skills`. */
   skillsDir?: string
-  /** Track A evaluator (M2): disabled unless explicitly enabled with a route. */
+  /** Track A evaluator: disabled unless explicitly enabled with a route. */
   evaluator?: EvaluatorInputConfig
   /**
    * Run one post-hoc steering drive on first finalize (background hosts
@@ -375,7 +375,7 @@ function finalizeSession(tracker: Tracker, session: Session, ctx: Context): void
     // state after exit). Inside the existing guard so a cache failure can
     // never break the session pipeline.
     tracker.store.writeAggregate(aggregate.sessionId, aggregate)
-    // M5 invalidation drop-ins: retire trigger signatures before the
+    // Invalidation drop-ins: retire trigger signatures before the
     // lifecycle sweep so newly archived rows share the sweep's view.
     drainInvalidationRecords(tracker.home, tracker.store, tracker.evaluation.skillsDir, endedAt, (message: string) => {
       ctx.logger.info(message)
@@ -399,13 +399,13 @@ function finalizeSession(tracker: Tracker, session: Session, ctx: Context): void
       const emitted = recordTrackB(aggregate, join(tracker.home, '.dsh', 'reproductions'), endedAt, (message: string) => {
         ctx.logger.info(message)
       })
-      // M4 spec runner: only the emit path has a spec to execute (breakages
+      // Spec runner: only the emit path has a spec to execute (breakages
       // have no spec). Fire-and-forget on the shared pending set so
       // settleSessionMeta awaits it; production flush stays non-blocking.
-      // DELIBERATE NON-GOAL: no curator hook reads repro outcomes — a passing
+      // Deliberate boundary: no curator hook reads repro outcomes — a passing
       // repro means the bug still reproduces and attaches to a session, not a
       // skill, so no skill earns +0.10 from it; the ledger is the audit trail
-      // and invalidation stays human/reviewer-side until M5.
+      // and invalidation stays human/reviewer-side.
       const run = startReproRun({
         emitted,
         startDir: dirname(fileURLToPath(new URL(import.meta.url))),

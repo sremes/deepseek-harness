@@ -1,5 +1,5 @@
 /**
- * Post-hoc steering driver (Plan-V1 loop closure): runs records written to
+ * Post-hoc steering driver: runs records written to
  * `$DSH_HOME/meta/steering/*.json` after their session exited through the
  * full Track A pipeline. The live path only sees steering files while the
  * session's process is alive, so headless one-shot records would otherwise

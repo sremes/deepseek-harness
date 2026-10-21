@@ -1,6 +1,6 @@
 /**
- * SDK-backed replay driver for the dsh-meta learning loop (M3 L2/L3,
- * Plan-V1 §4.1 + Q15): the pure `RunResult`-to-outcome mapping plus the
+ * SDK-backed replay driver for the dsh-meta learning loop (replay gates
+ * L2/L3): the pure `RunResult`-to-outcome mapping plus the
  * candidate/baseline runner over an injected narrow run function. The
  * evaluation pipeline in `@deepseek-ai/dsh-session-meta` receives the
  * runner through `EvaluationDeps.replayRunner`; this package never imports

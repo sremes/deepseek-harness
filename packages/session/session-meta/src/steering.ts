@@ -1,5 +1,5 @@
 /**
- * Headless steering ingest (Plan-V1 §3.3): the orchestrator writes correction
+ * Headless steering ingest: the orchestrator writes correction
  * records to `$DSH_HOME/meta/steering/<session-id>.json`; the offline loop
  * reads them back as the second steering source next to in-session
  * user/messages. Files are validated strictly and moved to `processed/`

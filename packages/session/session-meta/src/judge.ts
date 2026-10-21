@@ -1,5 +1,5 @@
 /**
- * M3 L4-lite pairwise judge (Plan-V1 §4.1): a blinded, order-swapped Flash
+ * Pairwise judge (gate L4): a blinded, order-swapped model call
  * verdict over one candidate/baseline pair. Harm veto only, never proof of
  * gain: any preference for the baseline on either run vetoes, split verdicts
  * veto, and unparseable output fails closed. Pure helpers (prompt building,

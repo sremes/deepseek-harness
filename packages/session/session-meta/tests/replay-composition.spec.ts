@@ -1,5 +1,5 @@
 /**
- * Wiring-slice proof for the M3 L2/L3 replay gates through real composition:
+ * Wiring-slice proof for the replay validation gates through real composition:
  * a host registers a real `SdkReplayRunner` (over a scripted delegate) via
  * `setReplayRunner`, a steered session finalizes, and the L2 pair runs
  * through the registered runner — candidate arm mounted, baseline bare —

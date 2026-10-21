@@ -1,5 +1,5 @@
 /**
- * End-to-end proof for the M2 Track A loop through real composition:
+ * End-to-end proof for the Track A learning loop through real composition:
  * a steered session finalizes, the evaluator runs off-thread, and a gated
  * draft lands on disk — while flush/dispose never block or throw.
  */
@@ -70,7 +70,7 @@ function appendSteered(loaded: Context, id: string) {
   return session
 }
 
-/** Steered session with enough tool work to pass the M2.2 effort gate. */
+/** Steered session with enough tool work to pass the effort gate. */
 function appendSubstantial(loaded: Context, id: string) {
   const session = loaded.sessions.create(SessionId(id))
   session.append('turn/start', { turn: 1 })
@@ -253,7 +253,7 @@ describe('Track A loop wiring', () => {
     }
   })
 
-  it('skips trivial steered sessions without evaluating (M2.2 effort gate)', async () => {
+  it('skips trivial steered sessions without evaluating (effort gate)', async () => {
     root = await mkdtemp(join(tmpdir(), 'dsh-track-a-trivial-'))
     if (root === undefined) throw new Error('tmp root missing')
     const home: string = root
@@ -271,7 +271,7 @@ describe('Track A loop wiring', () => {
     }
   })
 
-  it('mines flail-then-succeed sessions with no steering (M2.2 success path)', async () => {
+  it('mines flail-then-succeed sessions with no steering (success-mining path)', async () => {
     root = await mkdtemp(join(tmpdir(), 'dsh-track-a-mined-'))
     if (root === undefined) throw new Error('tmp root missing')
     const home: string = root

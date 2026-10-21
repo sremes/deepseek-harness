@@ -1,11 +1,11 @@
 /**
- * Selective per-clause composition (Harness² steal #3): when a draft
+ * Selective per-clause composition: when a draft
  * promotes under an EXISTING trigger_signature, keep the incumbent clauses
  * and add only new ones. Pure: no Cordis, no IO — the orchestrator owns
  * file reads/writes and the store owns clause evidence rows.
  *
- * Dedupe is exact-trimmed-match only. Near-dupes are NOT merged (open Q11:
- * no similarity matching by design) — both wordings are kept.
+ * Dedupe is exact-trimmed-match only. Near-dupes are NOT merged (no
+ * similarity matching by design) — both wordings are kept.
  *
  * @module @deepseek-ai/dsh-session-meta/compose
  */
@@ -68,8 +68,7 @@ export function parseIncumbentClauses(skillText: string): IncumbentClauses {
 /**
  * Union incumbent clauses with an incoming proposal. Sections stay separate
  * (forbidden unions forbidden, prescribed unions prescribed); dedupe is
- * exact-trimmed-match only — near-dupes are kept as distinct clauses (open
- * Q11, no similarity matching).
+ * exact-trimmed-match only — near-dupes are kept as distinct clauses (no similarity matching by design).
  *
  * @param incumbent - incumbent real clauses.
  * @param incoming - promoting evaluator proposal.

@@ -1,5 +1,5 @@
 /**
- * M4 Track B reproduction emitter (Plan-V1 §3.5): deterministic crash
+ * Track B reproduction emitter: deterministic crash
  * reports as Vitest specs under `.dsh/reproductions/`, plus the
  * known-breakages register for sessions with nothing emittable. No LLM, no
  * budget, no schema change — file emission only.
@@ -15,7 +15,7 @@ import type { MetaStore } from './store.ts'
 import { slugify } from './writer.ts'
 
 /**
- * Parser-class error names (Plan-V1 §3.5 honest scope: schema/parser class
+ * Parser-class error names (schema/parser class
  * only). Cited to the `TRACK_B_ERROR_NAMES` structural list in `triage.ts`
  * (`SyntaxError`, `JSONParseError`, `ZodError`, `ERR_REGEX_TIMEOUT`,
  * `ERR_TOOL_SCHEMA_VIOLATION`): the syntax/parse/zod/schema/json family is
@@ -72,15 +72,15 @@ export function renderReproduction(input: ReproductionInput): string {
   return [
     `// session: ${input.sessionId} at ${input.iso} via ${input.tool}`,
     `// environment: node ${input.nodeVersion} on ${input.platform} (pinned at emit time)`,
-    `import { expect, it } from 'vitest'`,
-    ``,
-    `// Characterization spec: passes while the crash reproduces, fails if upstream ever accepts the payload.`,
+    'import { expect, it } from \'vitest\'',
+    '',
+    '// Characterization spec: passes while the crash reproduces, fails if upstream ever accepts the payload.',
     `const payload = ${JSON.stringify(input.payload)};`,
-    ``,
+    '',
     `it(${JSON.stringify(input.testName)}, () => {`,
-    `  expect(() => JSON.parse(payload)).toThrow(SyntaxError);`,
-    `});`,
-    ``,
+    '  expect(() => JSON.parse(payload)).toThrow(SyntaxError);',
+    '});',
+    '',
   ].join('\n')
 }
 
@@ -246,12 +246,11 @@ export interface RunReproductionArgs {
  * failure mode — spawn error, signal death, timeout SIGKILL, even a failed
  * ledger insert — ends as a -1 row plus one log line.
  *
- * NON-GOAL (M4 close): no curator hook reads these outcomes. A passing repro
- * means the bug still reproduces — it attaches to a session, not a skill, so
- * no skill earns +0.10 from it; completion evidence for skills already flows
- * through the turnEnd completed predicate. The ledger is the audit trail;
- * invalidation (the spec goes red = possibly fixed upstream) stays
- * human/reviewer-side until M5.
+ * No curator hook reads these outcomes: a passing repro means the bug still
+ * reproduces — it attaches to a session, not a skill, so no skill earns
+ * +0.10 from it; completion evidence for skills already flows through the
+ * turnEnd completed predicate. The ledger is the audit trail; invalidation
+ * (the spec goes red = possibly fixed upstream) stays human/reviewer-side.
  *
  * @param args - Spec file, binary, timeout, ledger, timestamp, and log sink.
  * @returns No return value; the `trackb_runs` row and the log line land on settle.
@@ -318,7 +317,7 @@ export function startReproRun(options: StartReproRunOptions): Promise<void> {
 export const TRACKB_VITEST_CONFIG = '.trackb.vitest.config.ts'
 
 /** Minimal run config: only sibling specs match, coverage stays off. */
-const TRACKB_CONFIG_SOURCE = `export default { test: { include: ['*.spec.ts'], coverage: { enabled: false } } }\n`
+const TRACKB_CONFIG_SOURCE = 'export default { test: { include: [\'*.spec.ts\'], coverage: { enabled: false } } }\n'
 
 /**
  * Spawn the Vitest run and settle its exit code: the process code, or -1 on

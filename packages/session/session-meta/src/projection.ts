@@ -1,10 +1,10 @@
 /**
- * Structured state projection Σ (Plan-V1 §3.3, SKILL.state note): fold one
+ * Structured state projection Σ: fold one
  * finished aggregate into what-was-done / what-failed / what-the-human-said.
  * Pure and per-session — never a global schema. The evaluator sees this
  * projection plus the steering record, never raw history.
  *
- * M2.1: steps carry redacted tool arguments and failed-step result digests
+ * Steps carry redacted tool arguments and failed-step result digests
  * so the evaluator can ground clauses in observed parameters; failed steps
  * mark recovery (a later same-tool success) with the retry's arguments, so
  * drafts capture the retry pattern, not the failure.
@@ -79,7 +79,7 @@ export function recoveryMap(steps: ReadonlyArray<{ tool: string; ok: boolean; ar
 
 /**
  * Whether a JSON-encoded turn-end reason is a `completed` turn. Shared with
- * the M3 curator: completion has one definition (M2.2).
+ * the curator: completion has one definition.
  *
  * @param encodedReason - JSON-encoded turn-end reason, if any.
  * @returns True only when the reason parses with `kind: 'completed'`.

@@ -1,6 +1,6 @@
 /**
- * Structural replay seam for the SDK-backed L2/L3 driver (Plan-V1 §4.1 +
- * Q15). `ReplayOutcome`/`ReplayRunner` are owned by
+ * Structural replay seam for the SDK-backed replay driver.
+ * `ReplayOutcome`/`ReplayRunner` are owned by
  * `@deepseek-ai/dsh-session-meta`'s `types.ts` and re-exported here as
  * type-only aliases, so this file declares no shape of its own for them.
  * This package still never imports `sdk-client`, `dsh-session`, or `dsh-llm`

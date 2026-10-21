@@ -1,5 +1,5 @@
 /**
- * SDK-backed replay runner for the M3 L2/L3 gates (Plan-V1 §4.1 + Q15):
+ * SDK-backed replay runner for the replay validation gates (L2/L3):
  * implements the structural `ReplayRunner` seam over an injected narrow run
  * function, so this package never imports `sdk-client` at runtime. The
  * candidate arm carries the skill overlay, the baseline arm omits it, and

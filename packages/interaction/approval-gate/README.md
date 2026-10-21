@@ -119,29 +119,21 @@ Coverage expectation is per-file 100%: `tests/gate.spec.ts` pins the deny/allow 
 <a id="further-exploration"></a>
 ## Further Exploration
 
-- [Approval subsystem](../../docs/subsystems/approval.md) — request/outcome vocabulary, the answerer waterfall, and per-session policy.
+- [Approval subsystem](../../../docs/subsystems/approval.md) — request/outcome vocabulary, the answerer waterfall, and per-session policy.
 - [Escalation choreography](../../sandbox/sandbox/src/escalation.ts) — the strictly-wider ladder and the ask reason this gate reads.
 - [Skill filesystem roots](../../skill/skill-filesystem/README.md) — what a mounted candidate overlay looks like from the other side.
 
-<a id="model-experience"></a>
 ## Model Experience
 
-### Escalation answers
-
-#### What the model sees
-
-Nothing new on allow: the escalated call simply runs. On reject or delegation the tool's existing verbatim texts apply (`the user rejected…`, `no approval channel is available`) — this package contributes no prompt sections and no tools.
-
-#### Token effect
-
-Zero-direct token effect. Judge calls are host-side HTTP, off the agent's context and budget ledgers.
+Indirectly, through the approval outcomes the model already reads as tool results, decided here instead of by a human.
 
 #### KV Cache effect
 
 Independent behavior. The plugin never mutates request context, tool schemas, or system-prompt sections.
 
-<a id="known-limitations-and-deferred-work"></a>
 ## Known Limitations and Deferred Work
+
+<a id="known-limitations-and-deferred-work"></a>
 
 - **The judge reads the model's own justification**, which shares the transcript with untrusted tool output. Accepted residual risk: this gate beats blanket full-access; it is not kernel confinement.
 - **The judge is strict by design** — workspace-outside reads without a stated need are rejected. Loosen the system prompt only with a recorded false-positive rate, never by feel.

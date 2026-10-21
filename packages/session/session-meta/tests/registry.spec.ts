@@ -1,6 +1,6 @@
 /**
- * Skill-registry store slice: promotion lifecycle persistence (Plan-V1 M3,
- * §§3.4/4.1/4.2). Covers every branch of `recordPromotion`,
+ * Skill-registry store slice: promotion lifecycle persistence. Covers
+ * every branch of `recordPromotion`,
  * `recordLive`, `recordApplication`, `applyConfidenceDelta`, and `getSkill`, the
  * replay-run budget ledger, the promotions ledger, the Track B spec-runner
  * ledger, plus the v2 → v3, v3 → v4, v5 → v6, v6 → v7, and v7 → v8 migrations.

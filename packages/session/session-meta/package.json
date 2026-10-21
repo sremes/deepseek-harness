@@ -1,6 +1,6 @@
 {
   "name": "@deepseek-ai/dsh-session-meta",
-  "description": "Learning-loop input store for the DeepSeek Harness: redacted per-session aggregates, deterministic triage, and a SQLite meta store (dsh-meta M1)",
+  "description": "Learning-loop input store for the DeepSeek Harness: redacted per-session aggregates, deterministic triage, and a SQLite meta store",
   "version": "0.1.2-rc.1",
   "publishConfig": {
     "access": "public"

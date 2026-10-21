@@ -1,6 +1,6 @@
 /**
- * Candidate-overlay `--patch` generator for the M3 L2/L3 replay arms
- * (Plan-V1 §4.1 + Q15): renders the patch file that mounts one draft skill
+ * Candidate-overlay `--patch` generator for the replay arms (L2/L3):
+ * renders the patch file that mounts one draft skill
  * directory as an extra `skill-filesystem` root, so the candidate arm runs
  * with the draft discoverable and the baseline arm runs without it.
  *

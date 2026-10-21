@@ -1,5 +1,5 @@
 /**
- * M3 post-promotion lifecycle signals (Plan-V1 §§3.4/4.2): per-session
+ * Post-promotion lifecycle signals: per-session
  * confidence moves plus the 90-day decay sweep. Wires the store lifecycle
  * methods (`recordApplication`, `applyConfidenceDelta`) that promotion left
  * without callers.
@@ -31,7 +31,7 @@ export const REGRESSION_DELTA = -0.15
 /** Stale age for the decay sweep: skills untouched this long archive. */
 export const DECAY_AGE_MS = 90 * 24 * 3600 * 1000
 
-/** Per-session lifecycle signals; `completed` uses the M2.2 predicate. */
+/** Per-session lifecycle signals; `completed` uses the shared completion predicate. */
 export interface SessionSignals {
   readonly skillsConsulted: readonly string[]
   readonly steeringEvents: number

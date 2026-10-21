@@ -1,5 +1,5 @@
 /**
- * Selective per-clause composition (Harness² steal #3): union with
+ * Selective per-clause composition: union with
  * exact-trimmed-match dedupe, confounded-preferring per-clause verdicts, and
  * the `clause_evidence` store slice. Pure, no live calls.
  */
@@ -83,7 +83,7 @@ describe('composeSkill union', () => {
     expect(composed.kept).toEqual(['Never run rm -rf on unconfirmed paths'])
   })
 
-  it('does NOT merge near-dupe clauses (open Q11: exact match only)', () => {
+  it('does NOT merge near-dupe clauses (exact match only)', () => {
     const incumbent = { forbidden: [] as string[], prescribed: ['Echo the resolved path and wait for confirmation'] }
     const incoming = proposal({
       forbidden: [],

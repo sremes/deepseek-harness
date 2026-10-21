@@ -174,7 +174,7 @@ describe('hasRecoveredErrors', () => {
   })
 })
 
-describe('triage success-recovered routing (M2.2)', () => {
+describe('triage success-recovered routing', () => {
   function flailed(sessionId: string): ReturnType<typeof newAggregate> {
     const aggregate = newAggregate(sessionId, 0)
     observeToolCall(aggregate, { name: 'edit', callId: 'c1', arguments: '{"force":false}' })

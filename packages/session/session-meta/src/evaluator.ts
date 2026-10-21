@@ -1,8 +1,8 @@
 /**
- * Track A evaluator (Plan-V1 §3.3): a budget-capped Flash call over the
+ * Track A evaluator: a budget-capped model call over the
  * state projection plus the steering record. Input = goal + Σ + steering;
  * output = schema-validated JSON proposal. Model output is proposal-only —
- * the writer persists it as a *gated* draft and (in M3) the L0–L4 pipeline
+ * the writer persists it as a *gated* draft and the validation pipeline
  * decides promotion. Pure helpers (prompt building, proposal parsing) stay
  * separate from the streaming call so every branch is unit-testable with a
  * fake `llm.stream`.
@@ -51,7 +51,7 @@ export interface EvaluatorInput {
   readonly sessionId: string
   readonly projection: SessionProjection
   readonly steering: readonly SteeringRecord[]
-  /** Existing draft signatures (cheap dedup hint; full merge is M3). */
+  /** Existing draft signatures (cheap dedup hint; full merge happens at composition). */
   readonly knownSignatures?: readonly string[] | undefined
 }
 
@@ -125,7 +125,7 @@ export function buildEvaluatorPrompt(input: EvaluatorInput): string {
 /**
  * Extract and schema-validate one proposal from model text. Tolerates
  * fenced code blocks; rejects anything that is not a single JSON object
- * with the required shape. `completed` gates the prescription rule (M2.2):
+ * with the required shape. `completed` gates the prescription rule:
  * only a completed session may prescribe a procedure, unless `no_contrast`
  * marks the NO_ENTRY case (the correction restates observed behavior, so no
  * prescription is owed). Every clause must cite its contrastive grounding in

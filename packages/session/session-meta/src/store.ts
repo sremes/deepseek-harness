@@ -125,7 +125,7 @@ export interface InvalidationRow {
   readonly ts: number
 }
 
-/** Bounded stats snapshot over the meta store (the M5 cost-telemetry report). */
+/** Bounded stats snapshot over the meta store (progress report). */
 export interface MetaStats {
   /** Session count per triage route. */
   readonly sessionsByRoute: Record<MetaRoute, number>
@@ -326,7 +326,7 @@ export class MetaStore {
     return row.n
   }
 
-  /** Route histogram over all stored sessions (the M1 report primitive). */
+  /** Route histogram over all stored sessions. */
   routeHistogram(): Record<MetaRoute, number> {
     const histogram: Record<MetaRoute, number> = { track_a: 0, track_b: 0, no_op: 0 }
     const rows = this.db.prepare('SELECT route, COUNT(*) AS n FROM meta_sessions GROUP BY route').all() as Array<{
@@ -396,8 +396,7 @@ export class MetaStore {
   }
 
   /**
-   * List every skill-registry row (the M3 post-promotion lifecycle sweep
-   * input; Plan-V1 §§3.4/4.2).
+   * List every skill-registry row (post-promotion lifecycle sweep input).
    *
    * @returns All registry rows in key order.
    */
@@ -460,7 +459,8 @@ export class MetaStore {
 
   /**
    * Ledger one promotion event without touching the registry row. Composition
-   * (Harness² steal #3) keeps slug, confidence, status, and applied_count by
+   * (selective per-clause composition) keeps slug, confidence, status, and
+   * applied_count by
    * design, but the weekly blast cap counts `promotions` rows — a composed
    * promotion must trip the same counter as a replacing one.
    *
@@ -472,8 +472,8 @@ export class MetaStore {
   }
 
   /**
-   * Move a probation candidate to live (M3 promotion wiring — the L2–L4
-   * verdicts that justify the call land later; Plan-V1 §4.1).
+   * Move a probation candidate to live (the replay-gate verdicts that justify
+   * the call arrived with the pipeline result).
    *
    * @param signature - The candidate `trigger_signature`.
    * @returns No return value; unknown signatures and non-probation rows are ignored.
@@ -499,7 +499,7 @@ export class MetaStore {
   /**
    * Move a candidate's confidence by `delta`, clamped at `floor`. A move
    * that would land below `floor` pins confidence at `floor` and archives
-   * the candidate (Plan-V1 §§3.4/4.2).
+   * the candidate.
    *
    * @param signature - The candidate `trigger_signature`.
    * @param delta - The confidence move (+0.10 explicit positive, −0.15 regression).
@@ -599,7 +599,7 @@ export class MetaStore {
   }
 
   /**
-   * Record one Track B spec-runner outcome (the M4 audit trail: pass means
+   * Record one Track B spec-runner outcome (audit trail: pass means
    * the bug still reproduces, nonzero means the characterization failed).
    *
    * @param ts - Run timestamp (UTC millis, newest-first order key).
