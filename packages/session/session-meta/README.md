@@ -138,7 +138,7 @@ Progress is one function call — `MetaStore.getStats()`:
 
 ## Understand the implementation
 
-Synchronous handlers only aggregate and buffer. SQLite writes happen on `session/flush` and `session/disposed`, never on the event hot path. The canonical session log is never rewritten — redaction applies to the meta copy only (PEM blocks, known token prefixes, `key=value` secrets, `cwd` → `$CWD`, home → `~`, per-string/array/depth bounds). On-disk schema is versioned (`PRAGMA user_version = 9`); older versions migrate forward, anything else throws instead of migrating.
+Synchronous handlers only aggregate and buffer. SQLite writes happen on `session/flush` and `session/disposed`, never on the event hot path. The canonical session log is never rewritten — redaction applies to the meta copy only (PEM blocks, known token prefixes, `key=value` secrets, `cwd` → `$CWD`, home → `~`, per-string/array/depth bounds). On-disk schema is versioned (`PRAGMA user_version = 10`); older versions migrate forward, anything else throws instead of migrating.
 
 <details>
 <summary>Developer section: module map</summary>
