@@ -11,8 +11,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { EvaluatorProposal, SkillDraft } from './types.ts'
 
-/** Provenance recorded into the draft frontmatter. */
-export interface DraftProvenance {
+/** Source record persisted into the draft frontmatter: which sessions the draft comes from, and in which mode. */
+export interface DraftSource {
   readonly sessions: readonly string[]
   readonly mode: string
 }
@@ -26,8 +26,8 @@ export const DISABLE_MODEL_INVOCATION_LINE = 'disable-model-invocation: true'
 /** Draft-only footer sentence, replaced on promotion. */
 export const DRAFT_ONLY_FOOTER = 'Draft only: model invocation is disabled until the promotion pipeline passes.'
 
-/** Promoted footer sentence, carrying the provenance pointer. */
-export const PROMOTED_FOOTER = 'Promoted by the learning loop; provenance above.'
+/** Promoted footer sentence, carrying the source pointer. */
+export const PROMOTED_FOOTER = 'Promoted by the learning loop; source above.'
 
 /**
  * Slugify free text into the skill-name grammar
@@ -46,13 +46,14 @@ export function slugify(text: string): string {
 
 /** Render one gated `SKILL.md` draft. Pure: byte-exact output, unit-covered.
  *
- * Frontmatter metadata carries EXPERIENCE.md provenance derived only from
- * the proposal plus the provenance arg: `cue` is the proposal's
+ * Frontmatter metadata carries the draft's source record (cue/lesson/evidence
+ * in the shape of Harness²'s EXPERIENCE.md entries), derived only from the
+ * proposal plus the source arg: `cue` is the proposal's
  * `triggerConditions` verbatim, `lesson` is the proposal's `intent`
  * verbatim, and `evidence` is the proposal's `evidence` entries plus one
- * `session:<id>` entry per provenance session, JSON-encoded.
+ * `session:<id>` entry per source session, JSON-encoded.
  */
-export function renderDraft(proposal: EvaluatorProposal, provenance: DraftProvenance, slug: string): string {
+export function renderDraft(proposal: EvaluatorProposal, source: DraftSource, slug: string): string {
   const description = proposal.intent.replace(/\s+/g, ' ').trim().slice(0, MAX_DRAFT_DESCRIPTION_CHARS)
   const forbidden = proposal.forbidden.map(clause => `- ${clause}`).join('\n')
   const prescribed = proposal.prescribed.map(clause => `- ${clause}`).join('\n')
@@ -67,10 +68,10 @@ export function renderDraft(proposal: EvaluatorProposal, provenance: DraftProven
     '  applied_count: 0',
     '  version: 1',
     `  trigger_signature: ${proposal.triggerSignature}`,
-    `  provenance: {sessions: [${provenance.sessions.map(id => JSON.stringify(id)).join(', ')}], mode: ${JSON.stringify(provenance.mode)}}`,
+    `  source: {sessions: [${source.sessions.map(id => JSON.stringify(id)).join(', ')}], mode: ${JSON.stringify(source.mode)}}`,
     `  cue: ${proposal.triggerConditions}`,
     `  lesson: ${proposal.intent}`,
-    `  evidence: ${JSON.stringify([...proposal.evidence, ...provenance.sessions.map(id => `session:${id}`)])}`,
+    `  evidence: ${JSON.stringify([...proposal.evidence, ...source.sessions.map(id => `session:${id}`)])}`,
     '---',
     '',
     `# ${proposal.intent}`,
@@ -96,7 +97,7 @@ export function renderDraft(proposal: EvaluatorProposal, provenance: DraftProven
 export function writeSkillDraft(
   skillsDir: string,
   proposal: EvaluatorProposal,
-  provenance: DraftProvenance,
+  source: DraftSource,
 ): SkillDraft {
   const base = slugify(proposal.triggerSignature)
   let slug = base
@@ -106,7 +107,7 @@ export function writeSkillDraft(
   const dir = join(skillsDir, slug)
   mkdirSync(dir, { recursive: true })
   const file = join(dir, 'SKILL.md')
-  writeFileSync(file, renderDraft(proposal, provenance, slug))
+  writeFileSync(file, renderDraft(proposal, source, slug))
   return { slug, dir, file }
 }
 

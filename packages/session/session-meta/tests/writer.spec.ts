@@ -44,12 +44,12 @@ describe('renderDraft', () => {
     expect(text).toContain('whenToUse: Use when a task deletes or overwrites paths outside a scratch directory')
     expect(text).toContain('confidence_score: 0')
     expect(text).toContain('trigger_signature: Destructive Path Confirm!')
-    expect(text).toContain('provenance: {sessions: ["s1"], mode: "headless"}')
+    expect(text).toContain('source: {sessions: ["s1"], mode: "headless"}')
     expect(text).toContain('- Never run rm -rf on unconfirmed paths')
     expect(text).toContain('_Platform: dsh-headless.')
   })
 
-  it('carries cue/lesson/evidence derived from the proposal and provenance sessions', () => {
+  it('carries cue/lesson/evidence derived from the proposal and source sessions', () => {
     const proposal: EvaluatorProposal = {
       ...PROPOSAL,
       intent: 'Confirm destructive paths before running them',
@@ -62,7 +62,7 @@ describe('renderDraft', () => {
     expect(text).toContain(`evidence: ${JSON.stringify(['step 4: retryArgs added --flag', 'session:abc123'])}`)
   })
 
-  it('renders evidence without session entries when provenance carries no sessions', () => {
+  it('renders evidence without session entries when the source carries no sessions', () => {
     const text = renderDraft(
       { ...PROPOSAL, evidence: ['step 4: retryArgs added --flag'] },
       { sessions: [], mode: 'cli' },
@@ -133,7 +133,7 @@ describe('promoteDraftFile', () => {
     expect(text).not.toContain('disable-model-invocation: true')
     expect(text).toContain('version: 2')
     expect(text).not.toContain('Draft only: model invocation is disabled until the promotion pipeline passes.')
-    expect(text).toContain('Promoted by the learning loop; provenance above.')
+    expect(text).toContain('Promoted by the learning loop; source above.')
   })
 
   it('throws when the flag line is absent', async () => {
@@ -165,6 +165,6 @@ describe('promoteDraftFile', () => {
     promoteDraftFile(draft.dir)
     const text = readFileSync(draft.file, 'utf8')
     expect(text).not.toContain('Draft only: model invocation is disabled until the promotion pipeline passes.')
-    expect(text).toContain('Promoted by the learning loop; provenance above.')
+    expect(text).toContain('Promoted by the learning loop; source above.')
   })
 })

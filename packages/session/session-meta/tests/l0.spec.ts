@@ -110,10 +110,10 @@ describe('evaluateL0 frontmatter', () => {
     expect(result.violations).toEqual(expect.arrayContaining([expect.stringContaining('"trigger_signature"')]))
   })
 
-  it('rejects a missing provenance', () => {
-    const result = evaluateL0(VALID.replace(/^  provenance: .*$/m, ''))
+  it('rejects a missing source', () => {
+    const result = evaluateL0(VALID.replace(/^  source: .*$/m, ''))
     expect(result.pass).toBe(false)
-    expect(result.violations).toEqual(expect.arrayContaining([expect.stringContaining('"provenance"')]))
+    expect(result.violations).toEqual(expect.arrayContaining([expect.stringContaining('"source"')]))
   })
 
   it('rejects a missing cue', () => {

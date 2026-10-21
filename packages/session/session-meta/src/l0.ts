@@ -154,8 +154,8 @@ export function evaluateL0(draftText: string): { pass: boolean; violations: stri
     if ((metadata.get('trigger_signature') ?? '').trim() === '') {
       violations.push('metadata: missing required field "trigger_signature"')
     }
-    if ((metadata.get('provenance') ?? '').trim() === '') {
-      violations.push('metadata: missing required field "provenance"')
+    if ((metadata.get('source') ?? '').trim() === '') {
+      violations.push('metadata: missing required field "source"')
     }
     if ((metadata.get('cue') ?? '').trim() === '') {
       violations.push('metadata: missing required field "cue"')

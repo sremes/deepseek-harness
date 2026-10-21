@@ -394,11 +394,11 @@ async function runLensPipeline(
     return { decision, draftSlug: null }
   }
   mkdirSync(config.skillsDir, { recursive: true })
-  const provenance = { sessions: [aggregate.sessionId], mode: aggregate.origin ?? 'unknown' } as const
+  const source = { sessions: [aggregate.sessionId], mode: aggregate.origin ?? 'unknown' } as const
   // Contract gate (L0): cheapest layer first — render in memory and veto before any file
   // lands. The preview slug only feeds the `name:` field (writeSkillDraft
   // may add a numeric suffix); emptiness is unaffected by the suffix.
-  const gate = evaluateL0(renderDraft(proposal, provenance, slugify(proposal.triggerSignature)))
+  const gate = evaluateL0(renderDraft(proposal, source, slugify(proposal.triggerSignature)))
   if (!gate.pass) {
     deps.store.recordEvaluation({ ts: now, sessionId: aggregate.sessionId, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, decision: 'l0-rejected', draftSlug: null })
     deps.log(`session-meta: draft failed L0 contract for ${aggregate.sessionId}: ${gate.violations.join('; ')}`)
@@ -674,13 +674,13 @@ function composePromotion(
     }
   }
   if (!rewritten) {
-    const provenance = { sessions: [aggregate.sessionId], mode: aggregate.origin ?? 'unknown' } as const
+    const source = { sessions: [aggregate.sessionId], mode: aggregate.origin ?? 'unknown' } as const
     mkdirSync(incumbentDir, { recursive: true })
     writeFileSync(
       incumbentFile,
       renderDraft(
         { ...proposal, forbidden: composed.forbidden, prescribed: composed.prescribed },
-        provenance,
+        source,
         incumbent.slug,
       ),
     )
