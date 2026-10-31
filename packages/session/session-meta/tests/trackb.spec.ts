@@ -8,6 +8,7 @@
  * suite, which now really spawns a repro run.
  */
 
+import { appendFileSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -478,6 +479,10 @@ describe('Track B spec runner acceptance (real vitest)', () => {
     try {
       const emitted = emitReproduction(payloadAggregate('accept-timeout', '{"a":}'), dir, NOW)
       if (emitted === undefined) throw new Error('emission missing for the timeout aggregate')
+      // Pin the run past the kill bound: the emitted spec alone finishes in a
+      // few hundred milliseconds on some platforms, which made the timeout
+      // assertion a race (it observed a clean 0 instead of the SIGKILL -1).
+      appendFileSync(emitted.file, "\nit('blocks past the kill bound', async () => { await new Promise(resolve => setTimeout(resolve, 10_000)) })\n")
       const logs: string[] = []
       await runReproduction({ file: emitted.file, vitestBin, timeoutMs: 500, store, now: NOW, log: message => logs.push(message) })
       expect(store.listTrackBRuns(emitted.file)).toEqual([{ ts: NOW, file: emitted.file, exitCode: -1 }])

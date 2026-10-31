@@ -41,9 +41,31 @@ let context: Context | undefined
 afterEach(async () => {
   await context?.fiber.dispose()
   context = undefined
-  if (root !== undefined) await rm(root, { recursive: true, force: true })
+  if (root !== undefined) await rmWithRetry(root)
   root = undefined
 })
+
+/**
+ * Remove a temp home, retrying while a just-exited child still holds it.
+ * Windows keeps a handle on a process's working directory for a moment after
+ * exit, so one `rm` loses the race with EBUSY/EPERM even when the settle set
+ * has already drained.
+ *
+ * @param path - Directory to remove.
+ * @returns Resolves once the tree is gone.
+ */
+async function rmWithRetry(path: string): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await rm(path, { recursive: true, force: true })
+      return
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (attempt >= 20 || (code !== 'EBUSY' && code !== 'EPERM' && code !== 'ENOTEMPTY')) throw error
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+  }
+}
 
 async function setup(dshHome: string): Promise<Context> {
   context = new Context()
