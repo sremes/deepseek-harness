@@ -274,9 +274,19 @@ export const TRACKB_RUN_TIMEOUT_MS = 60_000
 export function resolveVitestBin(startDir: string): string | undefined {
   let dir = startDir
   for (let level = 0; level < 6; level += 1) {
-    const candidate = join(dir, 'node_modules', '.bin', 'vitest')
+    // Prefer the package's JS entry: it runs under `node` on every platform, so
+    // no shell shim (`.CMD`/`.ps1`) and no POSIX-only `.bin` wrapper is needed.
+    // Windows ships `.bin/vitest` as an sh script, which spawn cannot execute —
+    // resolving that first made every Track B repro die with -1 there.
+    const entry = join(dir, 'node_modules', 'vitest', 'vitest.mjs')
     try {
-      if (statSync(candidate).isFile()) return candidate
+      if (statSync(entry).isFile()) return entry
+    } catch {
+      // No package entry at this level: try the bin wrapper, then climb.
+    }
+    const bin = join(dir, 'node_modules', '.bin', 'vitest')
+    try {
+      if (statSync(bin).isFile()) return bin
     } catch {
       // No usable binary at this level (missing path or unreadable ancestor): keep climbing.
     }
@@ -397,7 +407,12 @@ function runVitest(file: string, vitestBin: string, timeoutMs: number): Promise<
     try {
       const dir = dirname(file)
       writeFileSync(join(dir, TRACKB_VITEST_CONFIG), TRACKB_CONFIG_SOURCE)
-      child = spawn(vitestBin, ['run', file, '--config', join(dir, TRACKB_VITEST_CONFIG), '--reporter=default'], { cwd: dir, stdio: 'ignore' })
+      const args = ['run', file, '--config', join(dir, TRACKB_VITEST_CONFIG), '--reporter=default']
+      // A resolved JS entry runs under this process's node; a POSIX bin wrapper
+      // is exec'd directly. Windows needs the former (its `.bin` is an sh script).
+      child = /\.(?:mjs|cjs|js)$/u.test(vitestBin)
+        ? spawn(process.execPath, [vitestBin, ...args], { cwd: dir, stdio: 'ignore' })
+        : spawn(vitestBin, args, { cwd: dir, stdio: 'ignore' })
     } catch {
       // Synchronous failure (bad cwd, unwritable dir): nothing to kill or await.
       resolve(-1)

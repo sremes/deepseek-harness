@@ -1,3 +1,4 @@
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { parseSteeringFile, processedSteeringDir, steeringFilePath } from '../src/steering.ts'
 
@@ -40,10 +41,10 @@ describe('parseSteeringFile', () => {
 
 describe('steering paths', () => {
   it('nests records under home/meta/steering', () => {
-    expect(steeringFilePath('/home', 'abc')).toBe('/home/meta/steering/abc.json')
+    expect(steeringFilePath('/home', 'abc')).toBe(join('/home', 'meta', 'steering', 'abc.json'))
   })
 
   it('resolves the processed directory beside pending records', () => {
-    expect(processedSteeringDir('/home')).toBe('/home/meta/steering/processed')
+    expect(processedSteeringDir('/home')).toBe(join('/home', 'meta', 'steering', 'processed'))
   })
 })

@@ -188,7 +188,7 @@ describe('resolveEvaluation', () => {
       minEvalToolCalls: 3,
       earlySteeringMessages: 1,
       maxPromotionsPerWeek: 5,
-      skillsDir: '/home/skills',
+      skillsDir: join('/home', 'skills'),
     })
   })
 
