@@ -38,6 +38,8 @@ export interface SessionAggregate {
   feedbackEvents: number
   /** Last `turn/end` reason payload, JSON-encoded. */
   turnEndReason?: string | undefined
+  /** Count of `turn/end` events observed; the lifecycle trigger key. */
+  turnEnds: number
   /** Bounded diagnostic evidence rows (errors + steering only). */
   evidence: MetaEvidence[]
   /** Events observed but deliberately not retained as evidence. */

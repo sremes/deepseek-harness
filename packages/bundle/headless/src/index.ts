@@ -388,11 +388,17 @@ async function run(ctx: Context, config: Config, io: HeadlessIo): Promise<void> 
       stopReasoning?.()
     }
     // Drain optional fire-and-forget observers (session-meta evaluations and
-    // repro runs) before exit: a one-shot run owns its completeness, and an
-    // unsettled queue dies with the process. Absent providers change nothing.
-    const drain = ctx.get('sessionMeta') as { settle?: () => Promise<unknown> } | null | undefined
-    await drain?.settle?.()
+    // repro runs) after the final flush: a one-shot run owns its completeness,
+    // and an unsettled queue dies with the process. The conclude call runs the
+    // turn-gated lifecycle for the finished session first — the flush alone
+    // only persisted rows. Absent providers change nothing.
+    const drain = ctx.get('sessionMeta') as {
+      settle?: () => Promise<unknown>
+      conclude?: (session: unknown) => void
+    } | null | undefined
     await sessions.flush(agent.session)
+    await drain?.conclude?.(agent.session)
+    await drain?.settle?.()
     if (failure !== undefined) throw failure.error
     const outcome = summarize(agent.session, firstSeq)
     if (projection === undefined) io.stdout.write(outcome.text + '\n')

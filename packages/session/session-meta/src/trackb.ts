@@ -30,6 +30,17 @@ export interface TrackBReproduction {
   readonly testName: string
 }
 
+/** Dedup key for one failing step (tool plus error name). */
+export function trackBStepKey(tool: string, error: string | null | undefined): string {
+  return `${tool}\0${error ?? ''}`
+}
+
+/** Dedup key when a track_b session has no failing step at all. */
+export const NO_FAILING_STEP_KEY = 'no-failing-step'
+
+/** No exclusions: consider every failing step. */
+const NO_EXCLUDE: ReadonlySet<string> = new Set()
+
 /**
  * One `breakages.jsonl` register row (the upstream-PR register for track_b
  * sessions with no emittable parser-class step).
@@ -118,41 +129,66 @@ function writeReproduction(sessionId: string, tool: string, args: string, reproD
 }
 
 /**
- * Emit a reproduction spec for the FIRST failing tool step (`ok === false`)
- * whose error matches {@link PARSER_CLASS_RE} and whose args is non-empty.
- *
- * @param aggregate - Finalized per-session aggregate.
- * @param reproDir - Reproduction directory (created recursively on emit).
- * @param now - Emit-time epoch millis.
- * @returns The written file and test name, or undefined when no step is
- * emittable as a runnable spec (the caller logs the skip).
+ * First emittable failing step not yet recorded: parser-class error with a
+ * non-empty payload. Returns the step plus its dedup key.
  */
-export function emitReproduction(
+function firstEmittable(
   aggregate: SessionAggregate,
-  reproDir: string,
-  now: number,
-): TrackBReproduction | undefined {
+  exclude: ReadonlySet<string>,
+): { tool: string; error: string; args: string; key: string } | undefined {
   for (const step of aggregate.toolSteps) {
     if (step.ok) continue
     if (step.error === undefined || !PARSER_CLASS_RE.test(step.error)) continue
     if (step.args === undefined || step.args === '') continue
-    return writeReproduction(aggregate.sessionId, step.tool, step.args, reproDir, now)
+    const key = trackBStepKey(step.tool, step.error)
+    if (exclude.has(key)) continue
+    return { tool: step.tool, error: step.error, args: step.args, key }
   }
   return undefined
 }
 
 /**
+ * Emit a reproduction spec for the FIRST unrecorded failing tool step
+ * (`ok === false`) whose error matches {@link PARSER_CLASS_RE} and whose
+ * args is non-empty.
+ *
+ * @param aggregate - Finalized per-session aggregate.
+ * @param reproDir - Reproduction directory (created recursively on emit).
+ * @param now - Emit-time epoch millis.
+ * @param exclude - Recorded step keys to skip (turn-level dedup).
+ * @returns The written file and test name, or undefined when no step is
+ * emittable as a runnable spec, or every emittable step is recorded.
+ */
+export function emitReproduction(
+  aggregate: SessionAggregate,
+  reproDir: string,
+  now: number,
+  exclude: ReadonlySet<string> = NO_EXCLUDE,
+): TrackBReproduction | undefined {
+  const found = firstEmittable(aggregate, exclude)
+  if (found === undefined) return undefined
+  return writeReproduction(aggregate.sessionId, found.tool, found.args, reproDir, now)
+}
+
+/**
  * Register one track_b session with no emittable step: appends one JSON
- * line to `breakages.jsonl` naming the first failing step (or nulls when
+ * line to `breakages.jsonl` naming the given failing step (or nulls when
  * the session has no failing step at all).
  *
  * @param aggregate - Finalized per-session aggregate.
  * @param reproDir - Reproduction directory (created recursively).
  * @param now - Emit-time epoch millis.
+ * @param step - Failing step to register; defaults to the first failing step.
  * @returns No return value; the register line is appended.
  */
-export function appendBreakage(aggregate: SessionAggregate, reproDir: string, now: number): void {
-  const step = aggregate.toolSteps.find(candidate => !candidate.ok)
+export function appendBreakage(
+  aggregate: SessionAggregate,
+  reproDir: string,
+  now: number,
+  step: { tool: string; error?: string | undefined; resultDigest?: string | undefined } | undefined = aggregate.toolSteps.find(
+    candidate => !candidate.ok,
+  ),
+): void {
   const row: TrackBBreakage = {
     ts: now,
     sessionId: aggregate.sessionId,
@@ -164,34 +200,61 @@ export function appendBreakage(aggregate: SessionAggregate, reproDir: string, no
   appendFileSync(join(reproDir, 'breakages.jsonl'), `${JSON.stringify(row)}\n`)
 }
 
+/** Outcome of one Track B recording: the emission plus its dedup key. */
+export interface TrackBOutcome {
+  /** Emitted spec, or undefined when the session registered a breakage. */
+  readonly reproduction: TrackBReproduction | undefined
+  /** Dedup key of the recorded step, or undefined when already recorded. */
+  readonly key: string | undefined
+}
+
 /**
  * Finalize-time Track B recording: emit a reproduction spec, else (no
- * emittable parser-class step) register the known breakage. Filesystem
- * failures propagate to the caller's containment (finalize never throws).
+ * unrecorded emittable parser-class step) register the known breakage.
+ * Filesystem failures propagate to the caller's containment (finalize
+ * never throws).
  *
  * @param aggregate - Finalized per-session aggregate.
  * @param reproDir - Reproduction directory (the `.dsh/reproductions`
  * protocol location, chosen by the caller).
  * @param now - Emit-time epoch millis.
- * @param log - Diagnostics sink for the emission or the skip.
- * @returns The emitted reproduction, or undefined when the session
- * registered a breakage instead (the caller's spec-runner hook: only the
- * emit path has a spec to execute).
+ * @param log - Diagnostics sink for the emission, the breakage, or the skip.
+ * @param exclude - Recorded step keys to skip (turn-level dedup).
+ * @returns The emission plus its dedup key; both undefined when every
+ * failing step is already recorded (the caller records nothing and runs
+ * no spec — only the emit path has a spec to execute).
  */
 export function recordTrackB(
   aggregate: SessionAggregate,
   reproDir: string,
   now: number,
   log: (message: string) => void,
-): TrackBReproduction | undefined {
-  const emitted = emitReproduction(aggregate, reproDir, now)
-  if (emitted === undefined) {
-    appendBreakage(aggregate, reproDir, now)
-    log(`session-meta: track_b ${aggregate.sessionId} has no emittable parser crash; breakage registered`)
-    return undefined
+  exclude: ReadonlySet<string> = NO_EXCLUDE,
+): TrackBOutcome {
+  const found = firstEmittable(aggregate, exclude)
+  if (found !== undefined) {
+    const reproduction = writeReproduction(aggregate.sessionId, found.tool, found.args, reproDir, now)
+    log(`session-meta: track_b ${aggregate.sessionId} reproduction written to ${reproduction.file}`)
+    return { reproduction, key: found.key }
   }
-  log(`session-meta: track_b ${aggregate.sessionId} reproduction written to ${emitted.file}`)
-  return emitted
+  const failing = aggregate.toolSteps.filter(candidate => !candidate.ok)
+  if (failing.length === 0) {
+    if (exclude.has(NO_FAILING_STEP_KEY)) {
+      log(`session-meta: track_b ${aggregate.sessionId} already recorded; skipping`)
+      return { reproduction: undefined, key: undefined }
+    }
+    appendBreakage(aggregate, reproDir, now, undefined)
+    log(`session-meta: track_b ${aggregate.sessionId} has no failing step; null breakage registered`)
+    return { reproduction: undefined, key: NO_FAILING_STEP_KEY }
+  }
+  const pending = failing.find(candidate => !exclude.has(trackBStepKey(candidate.tool, candidate.error)))
+  if (pending === undefined) {
+    log(`session-meta: track_b ${aggregate.sessionId} already recorded; skipping`)
+    return { reproduction: undefined, key: undefined }
+  }
+  appendBreakage(aggregate, reproDir, now, pending)
+  log(`session-meta: track_b ${aggregate.sessionId} has no emittable parser crash; breakage registered`)
+  return { reproduction: undefined, key: trackBStepKey(pending.tool, pending.error) }
 }
 
 /**

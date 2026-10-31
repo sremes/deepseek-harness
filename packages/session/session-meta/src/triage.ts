@@ -55,6 +55,7 @@ export function newAggregate(
     steeringEvents: 0,
     feedbackEvents: 0,
     turnEndReason: undefined,
+    turnEnds: 0,
     evidence: [],
     droppedEvidence: 0,
     steeringTexts: [],

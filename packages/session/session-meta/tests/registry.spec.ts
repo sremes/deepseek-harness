@@ -606,6 +606,27 @@ describe('getStats', () => {
   })
 })
 
+describe('listAggregateIds', () => {
+  it('lists nothing on a fresh store', () => {
+    expect(freshStore().listAggregateIds()).toEqual([])
+  })
+
+  it('lists persisted session ids in key order', () => {
+    const db = freshStore()
+    db.writeAggregate('sess-b', makeAggregate('sess-b'))
+    db.writeAggregate('sess-a', makeAggregate('sess-a'))
+    expect(db.listAggregateIds()).toEqual(['sess-a', 'sess-b'])
+  })
+
+  it('yields nothing instead of throwing on a closed store', () => {
+    const db = freshStore()
+    db.writeAggregate('sess-1', makeAggregate('sess-1'))
+    db.close()
+    store = undefined
+    expect(db.listAggregateIds()).toEqual([])
+  })
+})
+
 describe('aggregate cache', () => {
   it('round-trips a finalized aggregate with the pending-call map revived', () => {
     const db = freshStore()

@@ -11,7 +11,7 @@ import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { StreamChunk } from '@deepseek-ai/dsh-llm'
 import type { EvaluatorLlm } from '../src/evaluator.ts'
-import { drivePendingSteering } from '../src/driver.ts'
+import { drivePendingSteering, sweepUnevaluatedAggregates } from '../src/driver.ts'
 import type { EvaluationConfig } from '../src/orchestrate.ts'
 import { MetaStore } from '../src/store.ts'
 import { makeAggregate, textChunks, VALID_PROPOSAL_JSON } from './helpers.ts'
@@ -271,5 +271,92 @@ describe('hasEvaluation', () => {
     store.recordEvaluation({ ts: Date.UTC(2026, 8, 4, 6, 0, 0), sessionId: 's1', inputTokens: 1, outputTokens: 1, decision: 'llm-error', draftSlug: null })
     expect(store.hasEvaluation('s1')).toBe(true)
     expect(store.hasEvaluation('s2')).toBe(false)
+  })
+})
+
+/** Persisted aggregate with a human-steered session behind it. */
+function seedSteeredAggregate(sessionId: string): void {
+  if (store === undefined) throw new Error('store missing')
+  const aggregate = makeAggregate(sessionId)
+  aggregate.toolCalls = 5
+  aggregate.assistantMessages = 2
+  aggregate.steeringEvents = 1
+  aggregate.steeringTexts.push('not like that')
+  store.writeAggregate(sessionId, aggregate)
+}
+
+describe('sweepUnevaluatedAggregates', () => {
+  it('evaluates a persisted track_a aggregate with no ledger row', async () => {
+    const home = await freshHome()
+    // Weekly promotion cap pre-filled so the outcome holds at probation
+    // deterministically (no replay runner in the background drive).
+    store?.recordPromotion('cap-sig-1', 'cap-slug-1')
+    store?.recordPromotion('cap-sig-2', 'cap-slug-2')
+    store?.recordPromotion('cap-sig-3', 'cap-slug-3')
+    seedSteeredAggregate('s1')
+    const logs: string[] = []
+    const result = await sweepUnevaluatedAggregates(home, { ...CONFIG, skillsDir: join(home, 'skills') }, deps(home, okLlm(), logs))
+    expect(result).toEqual({ evaluated: 1, skipped: [], stoppedOnBudget: false })
+    expect(store?.hasEvaluation('s1')).toBe(true)
+    expect(existsSync(join(home, 'skills', 'destructive-path-confirm', 'SKILL.md'))).toBe(true)
+  })
+
+  it('skips an already-evaluated aggregate without calling the llm', async () => {
+    const home = await freshHome()
+    seedSteeredAggregate('s1')
+    store?.recordEvaluation({ ts: Date.UTC(2026, 8, 4, 6, 0, 0), sessionId: 's1', inputTokens: 1, outputTokens: 1, decision: 'promoted', draftSlug: 'x' })
+    let calls = 0
+    const counting: EvaluatorLlm = {
+      async *stream(): AsyncIterable<StreamChunk> {
+        calls += 1
+        yield* []
+      },
+    }
+    const logs: string[] = []
+    const result = await sweepUnevaluatedAggregates(home, { ...CONFIG, skillsDir: join(home, 'skills') }, deps(home, counting, logs))
+    expect(calls).toBe(0)
+    expect(result).toEqual({ evaluated: 0, skipped: [], stoppedOnBudget: false })
+  })
+
+  it('skips a trivial aggregate with no steering signal', async () => {
+    const home = await freshHome()
+    if (store === undefined) throw new Error('store missing')
+    store.writeAggregate('s1', makeAggregate('s1'))
+    let calls = 0
+    const counting: EvaluatorLlm = {
+      async *stream(): AsyncIterable<StreamChunk> {
+        calls += 1
+        yield* []
+      },
+    }
+    const logs: string[] = []
+    const result = await sweepUnevaluatedAggregates(home, { ...CONFIG, skillsDir: join(home, 'skills') }, deps(home, counting, logs))
+    expect(calls).toBe(0)
+    expect(result).toEqual({ evaluated: 0, skipped: [{ sessionId: 's1', reason: 'trivial' }], stoppedOnBudget: false })
+  })
+
+  it('does nothing when disabled or without an llm service', async () => {
+    const home = await freshHome()
+    seedSteeredAggregate('s1')
+    const logs: string[] = []
+    expect(await sweepUnevaluatedAggregates(home, { ...CONFIG, enabled: false, skillsDir: join(home, 'skills') }, deps(home, okLlm(), logs)))
+      .toEqual({ evaluated: 0, skipped: [], stoppedOnBudget: false })
+    expect(await sweepUnevaluatedAggregates(home, { ...CONFIG, skillsDir: join(home, 'skills') }, deps(home, undefined, logs)))
+      .toEqual({ evaluated: 0, skipped: [], stoppedOnBudget: false })
+    expect(store?.hasEvaluation('s1')).toBe(false)
+  })
+
+  it('stops the sweep on a spent daily budget', async () => {
+    const home = await freshHome()
+    seedSteeredAggregate('s1')
+    seedSteeredAggregate('s2')
+    const logs: string[] = []
+    const result = await sweepUnevaluatedAggregates(home, { ...CONFIG, maxCallsPerDay: 0, skillsDir: join(home, 'skills') }, deps(home, okLlm(), logs))
+    expect(result).toEqual({ evaluated: 0, skipped: [], stoppedOnBudget: true })
+    // The refusal is an attempt, not a conclusion: it lands in the ledger (so
+    // the daily cap stays sticky for the day) but the session stays sweepable
+    // for a later run once the budget resets.
+    expect(store?.hasEvaluation('s1')).toBe(true)
+    expect(store?.hasConclusiveEvaluation('s1')).toBe(false)
   })
 })

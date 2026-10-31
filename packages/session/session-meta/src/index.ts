@@ -25,7 +25,7 @@ import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-command-feedback'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
-import type { ReplayRunner, SessionAggregate } from './types.ts'
+import type { MetaRoute, ReplayRunner, SessionAggregate } from './types.ts'
 import {
   errorNameOf, isSteeringMessage, newAggregate,
   observeAgentError, observeToolCall, observeToolResult, observeUserMessage, triage,
@@ -41,7 +41,7 @@ import type { EvaluationConfig } from './orchestrate.ts'
 import { evaluateTrackASession, drainInvalidationRecords, hasSteeringFile, shouldEvaluateTrackA } from './orchestrate.ts'
 
 export type * from './types.ts'
-import { drivePendingSteering, type SteeringDriveDeps, type SteeringDriveResult, type SteeringDriveSkip } from './driver.ts'
+import { drivePendingSteering, sweepUnevaluatedAggregates, type SteeringDriveDeps, type SteeringDriveResult, type SteeringDriveSkip } from './driver.ts'
 export { drivePendingSteering, type SteeringDriveDeps, type SteeringDriveResult, type SteeringDriveSkip }
 
 /** Cordis plugin name. */
@@ -109,8 +109,12 @@ interface Tracker {
   readonly evaluation: EvaluationConfig
   readonly driveOnBoot: boolean
   bootDriveDone: boolean
-  /** Sessions with a queued or settled Track A evaluation: flush fires per batch, evaluation runs once. */
+  /** Sessions with a queued or settled Track A evaluation: evaluation runs once. */
   readonly evaluatedSessions: Set<string>
+  /** Last concluded `turnEnds` per session; absent means never concluded. */
+  readonly lifecycleTurns: Map<string, number>
+  /** Recorded Track B step keys per session (emitted specs + breakage lines). */
+  readonly trackBKeys: Map<string, Set<string>>
 }
 
 /**
@@ -152,16 +156,27 @@ export async function settleSessionMeta(): Promise<void> {
   }
 }
 
+/**
+ * Host-facing lifecycle handle: settle pending work plus an explicit
+ * end-of-run conclude for one session (no-op when already concluded).
+ */
+export interface SessionMetaHandle {
+  /** Await every queued Track A evaluation and repro run. */
+  settle: () => Promise<unknown>
+  /** Run the turn-gated lifecycle for one session (no-op when concluded). */
+  conclude: (session: Session) => void
+}
+
 /** Defaults for the Track A evaluator knobs. */
 const EVALUATOR_DEFAULTS = {
   maxInputBytes: 12000,
   maxOutputTokens: 2000,
   timeoutMs: 120000,
-  maxCallsPerDay: 1,
-  maxReplaysPerDay: 8,
+  maxCallsPerDay: 3,
+  maxReplaysPerDay: 24,
   minEvalToolCalls: 3,
   earlySteeringMessages: 1,
-  maxPromotionsPerWeek: 3,
+  maxPromotionsPerWeek: 5,
 } as const
 
 /**
@@ -203,22 +218,29 @@ export function optionalLlm(ctx: Context): EvaluatorLlm | undefined {
 /** Queue one background steering drive without blocking flush/dispose. */
 function queueBootDrive(tracker: Tracker, ctx: Context): void {
   tracker.bootDriveDone = true
+  const deps = {
+    store: tracker.store,
+    llm: optionalLlm(ctx),
+    replayRunner: activeReplayRunner,
+    now: () => Date.now(),
+    log: (message: string) => {
+      ctx.logger.info(message)
+    },
+  }
   const run = drivePendingSteering(
     tracker.home,
     tracker.evaluation,
-    {
-      store: tracker.store,
-      llm: optionalLlm(ctx),
-      replayRunner: activeReplayRunner,
-      now: () => Date.now(),
-      log: (message: string) => {
-        ctx.logger.info(message)
-      },
-    },
-  ).then((result) => {
+    deps,
+  ).then(async (result) => {
     ctx.logger.info(
       `session-meta: background steering drive: ${result.evaluated} evaluated, ${result.skipped.length} skipped${result.stoppedOnBudget ? ' (budget spent)' : ''}`,
     )
+    if (!result.stoppedOnBudget) {
+      const swept = await sweepUnevaluatedAggregates(tracker.home, tracker.evaluation, deps)
+      ctx.logger.info(
+        `session-meta: background aggregate sweep: ${swept.evaluated} evaluated, ${swept.skipped.length} skipped${swept.stoppedOnBudget ? ' (budget spent)' : ''}`,
+      )
+    }
     ctx.logger.info(`session-meta: stats ${JSON.stringify(tracker.store.getStats())}`)
   }).catch((error: unknown) => {
     ctx.logger.warn(`session-meta: background steering drive failed: ${String(error)}`)
@@ -317,6 +339,7 @@ function observeEvent(tracker: Tracker, session: Session, event: SessionEvent): 
     }
     case 'turn/end': {
       aggregate.turnEndReason = JSON.stringify(event.data.reason)
+      aggregate.turnEnds += 1
       break
     }
     default: {
@@ -325,7 +348,15 @@ function observeEvent(tracker: Tracker, session: Session, event: SessionEvent): 
   }
 }
 
-function finalizeSession(tracker: Tracker, session: Session, ctx: Context): void {
+/** Triaged view shared by persistence and the turn-gated lifecycle. */
+interface TriagedSession {
+  aggregate: SessionAggregate
+  route: MetaRoute
+  reasons: string[]
+  endedAt: number
+}
+
+function triageSession(tracker: Tracker, session: Session): TriagedSession {
   const aggregate = ensureAggregate(tracker, session)
   const verdict = triage(aggregate)
   // Approval-outcome signals: exact callId join against the gate ledger.
@@ -347,7 +378,12 @@ function finalizeSession(tracker: Tracker, session: Session, ctx: Context): void
   } catch {
     // No ledger, no signals.
   }
-  const endedAt = Date.now()
+  return { aggregate, route, reasons, endedAt: Date.now() }
+}
+
+/** Persist rows and drain invalidation drop-ins. Runs on every flush; safe to repeat (upserts). */
+function persistSession(tracker: Tracker, ctx: Context, triaged: TriagedSession): void {
+  const { aggregate, route, reasons, endedAt } = triaged
   tracker.store.writeSession({
     id: aggregate.sessionId,
     cwd: aggregate.cwd ?? null,
@@ -375,11 +411,29 @@ function finalizeSession(tracker: Tracker, session: Session, ctx: Context): void
     // state after exit). Inside the existing guard so a cache failure can
     // never break the session pipeline.
     tracker.store.writeAggregate(aggregate.sessionId, aggregate)
-    // Invalidation drop-ins: retire trigger signatures before the
-    // lifecycle sweep so newly archived rows share the sweep's view.
+    // Invalidation drop-ins: retire trigger signatures promptly; the directory
+    // drains on first sight and later flushes find it empty (idempotent).
     drainInvalidationRecords(tracker.home, tracker.store, tracker.evaluation.skillsDir, endedAt, (message: string) => {
       ctx.logger.info(message)
     })
+  } catch (error) {
+    ctx.logger.warn(`session-meta: persist failed: ${String(error)}`)
+  }
+}
+
+/**
+ * Turn-gated lifecycle: curator signals, decay sweep, Track B
+ * emission, evaluation, and the boot drive. Runs at most once per turn per
+ * session (plus the pre-turn first finalize, which captures early crashes);
+ * flushes with no new turn end return immediately.
+ */
+function concludeTriaged(tracker: Tracker, ctx: Context, triaged: TriagedSession): void {
+  const { aggregate, route, endedAt } = triaged
+  const id = aggregate.sessionId
+  const last = tracker.lifecycleTurns.get(id) ?? -1
+  if (aggregate.turnEnds <= last) return
+  tracker.lifecycleTurns.set(id, aggregate.turnEnds)
+  try {
     applySessionSignals(
       tracker.store,
       tracker.evaluation.skillsDir,
@@ -395,31 +449,37 @@ function finalizeSession(tracker: Tracker, session: Session, ctx: Context): void
     sweepDecay(tracker.store, tracker.evaluation.skillsDir, (message: string) => {
       ctx.logger.info(message)
     }, endedAt)
-    if (verdict.route === 'track_b') {
-      const emitted = recordTrackB(aggregate, join(tracker.home, '.dsh', 'reproductions'), endedAt, (message: string) => {
+    if (route === 'track_b') {
+      const seen = tracker.trackBKeys.get(id) ?? new Set<string>()
+      tracker.trackBKeys.set(id, seen)
+      const recorded = recordTrackB(aggregate, join(tracker.home, '.dsh', 'reproductions'), endedAt, (message: string) => {
         ctx.logger.info(message)
-      })
-      // Spec runner: only the emit path has a spec to execute (breakages
-      // have no spec). Fire-and-forget on the shared pending set so
-      // settleSessionMeta awaits it; production flush stays non-blocking.
-      // Deliberate boundary: no curator hook reads repro outcomes — a passing
-      // repro means the bug still reproduces and attaches to a session, not a
-      // skill, so no skill earns +0.10 from it; the ledger is the audit trail
-      // and invalidation stays human/reviewer-side.
-      const run = startReproRun({
-        emitted,
-        startDir: dirname(fileURLToPath(new URL(import.meta.url))),
-        timeoutMs: TRACKB_RUN_TIMEOUT_MS,
-        store: tracker.store,
-        now: endedAt,
-        log: (message: string) => {
-          ctx.logger.info(message)
-        },
-      })
-      pendingEvaluations.add(run)
-      void run.finally(() => {
-        pendingEvaluations.delete(run)
-      })
+      }, seen)
+      if (recorded.key !== undefined) seen.add(recorded.key)
+      const emitted = recorded.reproduction
+      if (emitted !== undefined) {
+        // Spec runner: only the emit path has a spec to execute (breakages
+        // have no spec). Fire-and-forget on the shared pending set so
+        // settleSessionMeta awaits it; production flush stays non-blocking.
+        // Deliberate boundary: no curator hook reads repro outcomes — a passing
+        // repro means the bug still reproduces and attaches to a session, not a
+        // skill, so no skill earns +0.10 from it; the ledger is the audit trail
+        // and invalidation stays human/reviewer-side.
+        const run = startReproRun({
+          emitted,
+          startDir: dirname(fileURLToPath(new URL(import.meta.url))),
+          store: tracker.store,
+          timeoutMs: TRACKB_RUN_TIMEOUT_MS,
+          now: endedAt,
+          log: (message: string) => {
+            ctx.logger.info(message)
+          },
+        })
+        pendingEvaluations.add(run)
+        void run.finally(() => {
+          pendingEvaluations.delete(run)
+        })
+      }
     }
     /* v8 ignore start -- curator calls are contained; a store failure needs a broken registry. */
   } catch (error) {
@@ -428,7 +488,7 @@ function finalizeSession(tracker: Tracker, session: Session, ctx: Context): void
   /* v8 ignore stop */
   if (
     shouldEvaluateTrackA(
-      verdict.route,
+      route,
       tracker.evaluation.enabled,
       aggregate,
       aggregate.steeringTexts.length > 0 || hasSteeringFile(tracker.home, aggregate.sessionId),
@@ -438,10 +498,21 @@ function finalizeSession(tracker: Tracker, session: Session, ctx: Context): void
     queueEvaluation(tracker, ctx, aggregate)
   }
   // Background hosts (driveOnBoot): one post-hoc steering drive on first
-  // finalize, drained through the same pending set one-shot hosts await.
+  // conclude, drained through the same pending set one-shot hosts await.
   if (tracker.driveOnBoot && !tracker.bootDriveDone) {
     queueBootDrive(tracker, ctx)
   }
+}
+
+/** Explicit end-of-run conclude for one session; no-op when already concluded. */
+function concludeSession(tracker: Tracker, session: Session, ctx: Context): void {
+  concludeTriaged(tracker, ctx, triageSession(tracker, session))
+}
+
+function finalizeSession(tracker: Tracker, session: Session, ctx: Context): void {
+  const triaged = triageSession(tracker, session)
+  persistSession(tracker, ctx, triaged)
+  concludeTriaged(tracker, ctx, triaged)
 }
 
 /**
@@ -464,16 +535,22 @@ export function apply(ctx: Context, config: Config): void {
     home,
     evaluation: resolveEvaluation(config, home),
     evaluatedSessions: new Set(),
+    lifecycleTurns: new Map(),
+    trackBKeys: new Map(),
     driveOnBoot: config.driveOnBoot === true,
     bootDriveDone: false,
   }
   ctx.effect(() => () => {
     store.close()
   })
-  // Drain handle for one-shot hosts: the headless runner awaits it after
-  // flush so fire-and-forget evaluations and repro runs settle instead of
-  // dying with the process. Absent hosts ignore it.
-  ctx.provide('sessionMeta', { settle: () => settleSessionMeta() })
+  // Drain handle for one-shot hosts: the headless runner concludes and awaits
+  // it after flush so fire-and-forget evaluations and repro runs settle
+  // instead of dying with the process. Absent hosts ignore it.
+  const handle: SessionMetaHandle = {
+    settle: () => settleSessionMeta(),
+    conclude: (session: Session) => concludeSession(tracker, session, ctx),
+  }
+  ctx.provide('sessionMeta', handle)
   ctx.on('session/event', (session, event) => {
     observeEvent(tracker, session, event)
   })

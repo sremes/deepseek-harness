@@ -364,6 +364,32 @@ export class MetaStore {
   }
 
   /**
+   * Whether a session reached a conclusive evaluator verdict rather than
+   * only an attempt. A refusal (`budget-refused`) or a failure (`llm-error`)
+   * spends nothing and concludes nothing, so a sweep may still rescue that
+   * session once budget or the route recovers.
+   *
+   * @param sessionId - session to look up.
+   * @returns true when at least one ledger row carries a conclusive decision.
+   */
+  hasConclusiveEvaluation(sessionId: string): boolean {
+    const row = this.db.prepare(
+      "SELECT 1 AS one FROM evaluator_ledger WHERE session_id = ? AND decision NOT IN ('budget-refused', 'llm-error') LIMIT 1",
+    ).get(sessionId) as { one: number } | undefined
+    return row !== undefined
+  }
+
+  /** Every session id with a persisted aggregate (sweep input for crashed/never-closed sessions). */
+  listAggregateIds(): string[] {
+    try {
+      const rows = this.db.prepare('SELECT session_id FROM meta_aggregates ORDER BY session_id').all() as Array<{ session_id: string }>
+      return rows.map(row => row.session_id)
+    } catch {
+      return []
+    }
+  }
+
+  /**
    * Record one replay run at `ts` (the L2/L3 replay-run budget ledger).
    *
    * @param ts - run timestamp (UTC millis).
@@ -656,7 +682,7 @@ export class MetaStore {
     if (row === undefined) return undefined
     try {
       const parsed = JSON.parse(row.aggregate) as Omit<SessionAggregate, 'pendingToolCalls'> & { pendingToolCalls: Array<[string, number]> }
-      return { ...parsed, pendingToolCalls: new Map(parsed.pendingToolCalls) }
+      return { ...parsed, turnEnds: parsed.turnEnds ?? 0, pendingToolCalls: new Map(parsed.pendingToolCalls) }
     } catch {
       return undefined
     }

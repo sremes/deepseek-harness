@@ -23,6 +23,7 @@ import type { EvaluatorLlm } from './evaluator.ts'
 import { evaluateTrackASession, shouldEvaluateTrackA, type EvaluationConfig } from './orchestrate.ts'
 import { parseSteeringFile, processedSteeringDir } from './steering.ts'
 import type { MetaStore } from './store.ts'
+import { triage } from './triage.ts'
 import type { ReplayRunner } from './types.ts'
 
 /** Runtime dependencies of one steering drive. */
@@ -152,6 +153,65 @@ export async function drivePendingSteering(
       continue
     }
     consumeRecord(home, sessionId)
+    evaluated += 1
+  }
+  return { evaluated, skipped, stoppedOnBudget: false }
+}
+
+/**
+ * Sweep persisted aggregates the live path never concluded (crashed
+ * processes, sessions that closed without a turn): evaluate qualifying
+ * track_a aggregates exactly once, ledger-guarded. The curator and Track B
+ * sides stay live-only (they need the session context); the sweep is the
+ * learning backstop, not the full lifecycle.
+ *
+ * @param home - resolved harness home holding `meta/meta.db`.
+ * @param config - Track A evaluation settings (same object the live path uses).
+ * @param deps - store, optional LLM service, clock, and log sink.
+ * @returns counts of evaluated aggregates, per-aggregate skips, and budget stop.
+ */
+export async function sweepUnevaluatedAggregates(
+  home: string,
+  config: EvaluationConfig,
+  deps: SteeringDriveDeps,
+): Promise<SteeringDriveResult> {
+  const skipped: Array<{ sessionId: string; reason: string }> = []
+  let evaluated = 0
+  if (!config.enabled || deps.llm === undefined) return { evaluated, skipped, stoppedOnBudget: false }
+  const ids = deps.store.listAggregateIds()
+  for (const sessionId of ids) {
+    // Ledger-guarded on a CONCLUSIVE verdict only: the steering drive (which
+    // runs first) or a previous sweep already concluded this session. A
+    // refusal or an llm error is an attempt, not a conclusion, so those
+    // sessions stay sweepable (otherwise one spent-budget day would retire
+    // the backstop for that session forever).
+    if (deps.store.hasConclusiveEvaluation(sessionId)) continue
+    const aggregate = deps.store.readAggregate(sessionId)
+    if (aggregate === undefined) {
+      deps.log(`session-meta: sweep deferring ${sessionId} (no cached aggregate)`)
+      skipped.push({ sessionId, reason: 'no-aggregate' })
+      continue
+    }
+    if (!shouldEvaluateTrackA(triage(aggregate).route, true, aggregate, aggregate.steeringTexts.length > 0, config)) {
+      deps.log(`session-meta: sweep skipping trivial ${sessionId}`)
+      skipped.push({ sessionId, reason: 'trivial' })
+      continue
+    }
+    const outcome = await evaluateTrackASession(
+      { store: deps.store, home, llm: deps.llm, replayRunner: deps.replayRunner, now: deps.now, log: deps.log },
+      config,
+      aggregate,
+    )
+    if (outcome.decision === 'budget-refused') {
+      return { evaluated, skipped, stoppedOnBudget: true }
+    }
+    if (outcome.decision === 'llm-error' || outcome.decision === 'skipped:no-llm' || outcome.decision === 'skipped:no-steering') {
+      // Transient (or steering-less): a later steering file or drive may
+      // still conclude this session; the check itself spends nothing.
+      deps.log(`session-meta: sweep deferring ${sessionId} (${outcome.decision})`)
+      skipped.push({ sessionId, reason: outcome.decision })
+      continue
+    }
     evaluated += 1
   }
   return { evaluated, skipped, stoppedOnBudget: false }

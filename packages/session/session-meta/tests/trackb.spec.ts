@@ -173,10 +173,11 @@ describe('recordTrackB', () => {
   it('emits the spec and logs the file for parser-class crashes', async () => {
     const reproDir = await freshDir()
     const logs: string[] = []
-    const emitted = recordTrackB(crashAggregate('s9'), reproDir, NOW, (message) => {
+    const { reproduction: emitted, key } = recordTrackB(crashAggregate('s9'), reproDir, NOW, (message) => {
       logs.push(message)
     })
     expect(emitted?.file).toBe(join(reproDir, 'repro-s9-write-file.spec.ts'))
+    expect(key).toBeDefined()
     expect(logs).toHaveLength(1)
     expect(logs[0]).toContain('repro-s9-write-file.spec.ts')
     expect(existsSync(join(reproDir, 'breakages.jsonl'))).toBe(false)
@@ -187,13 +188,63 @@ describe('recordTrackB', () => {
     const aggregate = makeAggregate('s10')
     aggregate.toolSteps.push({ tool: 'search', ok: false, error: 'ERR_REGEX_TIMEOUT', args: '(a+)+$' })
     const logs: string[] = []
-    const emitted = recordTrackB(aggregate, reproDir, NOW, (message) => {
+    const { reproduction, key } = recordTrackB(aggregate, reproDir, NOW, (message) => {
       logs.push(message)
     })
-    expect(emitted).toBeUndefined()
+    expect(reproduction).toBeUndefined()
+    expect(key).toBeDefined()
     expect(logs).toHaveLength(1)
     expect(logs[0]).toContain('s10')
     expect(JSON.parse(readFileSync(join(reproDir, 'breakages.jsonl'), 'utf8'))).toMatchObject({ sessionId: 's10', tool: 'search' })
+  })
+
+  it('skips an already-recorded crash instead of emitting a duplicate', async () => {
+    const reproDir = await freshDir()
+    const aggregate = crashAggregate('s11')
+    const logs: string[] = []
+    const first = recordTrackB(aggregate, reproDir, NOW, (message) => {
+      logs.push(message)
+    })
+    expect(first.reproduction?.file).toBe(join(reproDir, 'repro-s11-write-file.spec.ts'))
+    expect(first.key).toBeDefined()
+    const second = recordTrackB(aggregate, reproDir, NOW, (message) => {
+      logs.push(message)
+    }, new Set([first.key as string]))
+    expect(second).toEqual({ reproduction: undefined, key: undefined })
+    expect(logs).toHaveLength(2)
+    expect(logs[1]).toContain('already recorded')
+    expect(existsSync(join(reproDir, 'repro-s11-write-file-2.spec.ts'))).toBe(false)
+  })
+
+  it('emits a later distinct crash past the recorded one', async () => {
+    const reproDir = await freshDir()
+    const aggregate = crashAggregate('s12')
+    const first = recordTrackB(aggregate, reproDir, NOW, () => {})
+    expect(first.key).toBeDefined()
+    aggregate.toolSteps.push({ tool: 'parse', ok: false, error: 'JSONParseError', args: '{"b":}' })
+    const second = recordTrackB(aggregate, reproDir, NOW, () => {}, new Set([first.key as string]))
+    expect(second.reproduction?.file).toBe(join(reproDir, 'repro-s12-parse.spec.ts'))
+    expect(second.key).toBeDefined()
+    expect(second.key).not.toBe(first.key)
+  })
+
+  it('skips an already-registered breakage instead of appending a duplicate', async () => {
+    const reproDir = await freshDir()
+    const aggregate = makeAggregate('s13')
+    aggregate.toolSteps.push({ tool: 'search', ok: false, error: 'ERR_REGEX_TIMEOUT', args: '(a+)+$' })
+    const logs: string[] = []
+    const first = recordTrackB(aggregate, reproDir, NOW, (message) => {
+      logs.push(message)
+    })
+    expect(first.reproduction).toBeUndefined()
+    expect(first.key).toBeDefined()
+    const before = readFileSync(join(reproDir, 'breakages.jsonl'), 'utf8')
+    const second = recordTrackB(aggregate, reproDir, NOW, (message) => {
+      logs.push(message)
+    }, new Set([first.key as string]))
+    expect(second).toEqual({ reproduction: undefined, key: undefined })
+    expect(readFileSync(join(reproDir, 'breakages.jsonl'), 'utf8')).toBe(before)
+    expect(logs[logs.length - 1]).toContain('already recorded')
   })
 })
 

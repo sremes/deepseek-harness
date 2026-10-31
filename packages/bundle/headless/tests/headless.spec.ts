@@ -424,7 +424,7 @@ describe('headless runner', () => {
     await test.ctx.fiber.dispose()
   })
 
-  it('drains an optional sessionMeta settle between flush and exit', async () => {
+  it('concludes then drains an optional sessionMeta handle between flush and exit', async () => {
     const test = await bench({
       async afterPrompt(session, message) {
         await Promise.resolve()
@@ -433,6 +433,9 @@ describe('headless runner', () => {
     })
     const order: string[] = []
     test.ctx.provide('sessionMeta', {
+      conclude: () => {
+        order.push('conclude')
+      },
       settle: async () => {
         order.push('settle')
       },
@@ -440,7 +443,7 @@ describe('headless runner', () => {
     const result = await test.run()
     expect(result.code).toBe(0)
     expect(result.order).toEqual(['flush', 'exit'])
-    expect(order).toEqual(['settle'])
+    expect(order).toEqual(['conclude', 'settle'])
     await test.ctx.fiber.dispose()
   })
 
