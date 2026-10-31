@@ -3,6 +3,7 @@
  * proposal, chunk builders for a fake `llm.stream`, and a blank aggregate.
  */
 
+import { rm } from 'node:fs/promises'
 import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import type { StreamChunk } from '@deepseek-ai/dsh-llm'
 import type { SessionAggregate } from '../src/types.ts'
@@ -62,5 +63,27 @@ export function makeAggregate(sessionId: string): SessionAggregate {
     skillsConsulted: [],
     assistantMessagesAtFirstSteering: undefined,
     pendingToolCalls: new Map(),
+  }
+}
+
+/**
+ * Remove a temp directory, retrying while a just-exited child still holds it.
+ * Windows keeps a handle on a process's working directory for a moment after
+ * exit (Track B repro runs have the temp repro dir as their cwd), so a single
+ * `rm` loses that race with EBUSY/EPERM even after the settle set drained.
+ *
+ * @param path - Directory to remove.
+ * @returns Resolves once the tree is gone.
+ */
+export async function rmWithRetry(path: string): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await rm(path, { recursive: true, force: true })
+      return
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (attempt >= 20 || (code !== 'EBUSY' && code !== 'EPERM' && code !== 'ENOTEMPTY')) throw error
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
   }
 }

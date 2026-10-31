@@ -9,7 +9,7 @@
  */
 
 import { appendFileSync } from 'node:fs'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -18,7 +18,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type { SessionAggregate } from '../src/types.ts'
 import { PARSER_CLASS_RE, TRACKB_RUN_TIMEOUT_MS, appendBreakage, emitReproduction, recordTrackB, resolveVitestBin, runReproduction, startReproRun } from '../src/trackb.ts'
 import { MetaStore } from '../src/store.ts'
-import { makeAggregate } from './helpers.ts'
+import { makeAggregate, rmWithRetry } from './helpers.ts'
 
 const NOW = 1788297600000
 
@@ -35,7 +35,7 @@ function crashAggregate(sessionId: string): SessionAggregate {
 let root: string | undefined
 
 afterEach(async () => {
-  if (root !== undefined) await rm(root, { recursive: true, force: true })
+  if (root !== undefined) await rmWithRetry(root)
   root = undefined
 })
 
