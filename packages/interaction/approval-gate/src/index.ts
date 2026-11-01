@@ -231,7 +231,7 @@ export function apply(ctx: Context, config: Config): void {
   })
   ctx.on('approval/request', async (req, next): Promise<ApprovalOutcome> => {
     try {
-      if (req.toolName !== 'bash') return delegate(next, 'non-bash', ledgerCallId(req.callId))
+      if (req.toolName !== 'bash' && req.toolName !== 'pwsh') return delegate(next, 'non-shell', ledgerCallId(req.callId))
       const callId = typeof req.callId === 'string' ? req.callId : String(req.callId ?? '')
       const id = ledgerCallId(req.callId) ?? (callId === '' ? undefined : callId)
       const command = commandForCall(calls, callId)

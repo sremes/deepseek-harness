@@ -68,10 +68,10 @@ function verdictBody(verdict: unknown, grounds: unknown): unknown {
 }
 
 /** Announce one tool call on the firehose so the gate can recover it. */
-async function announce(ctx: Context, callId: string, command: string): Promise<void> {
+async function announce(ctx: Context, callId: string, command: string, tool = 'bash'): Promise<void> {
   await ctx.emit('session/event', {} as never, {
     type: 'tool/call',
-    data: { callId, name: 'bash', arguments: JSON.stringify({ command }) },
+    data: { callId, name: tool, arguments: JSON.stringify({ command }) },
   } as never)
 }
 
@@ -157,7 +157,7 @@ describe('gate plugin wiring', () => {
     expect(outcome).toBe('rejected')
   })
 
-  it('delegates non-bash tools and unrecoverable commands', async () => {
+  it('delegates non-shell tools and unrecoverable commands', async () => {
     const home = await freshHome()
     const loaded = await mounted(home)
     const { agent } = fakeAgent()
@@ -168,6 +168,22 @@ describe('gate plugin wiring', () => {
     await expect(loaded.approval.request(requestOf(agent, {}))).resolves.toBe('unavailable')
     const numeric = { agent, toolName: 'bash', callId: 7 } as unknown as ApprovalRequest
     await expect(loaded.approval.request(numeric)).resolves.toBe('unavailable')
+  })
+
+  it('claims the pwsh twin of a bash escalation', async () => {
+    const home = await freshHome()
+    const loaded = await mounted(home)
+    const { agent } = fakeAgent()
+    await announce(loaded, 'c-pwsh', 'echo hi', 'pwsh')
+    await expect(
+      loaded.approval.request(
+        requestOf(agent, {
+          toolName: 'pwsh',
+          callId: ToolCallId('c-pwsh'),
+          reason: 'escalate sandbox to danger-full-access',
+        }),
+      ),
+    ).resolves.toBe('allowed-once')
   })
 
   it('ignores firehose shapes that carry no call identity', async () => {

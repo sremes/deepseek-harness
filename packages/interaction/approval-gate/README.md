@@ -66,7 +66,7 @@ Defaults judge through Jev (`jev-preview`); `TYPESAFE_KEY` must be in the enviro
 | Allowlist match | `allowed-once` | `allowlist` / `allowed-once` |
 | Judge allow / reject | `allowed-once` / `rejected` | `judge` / outcome + grounds + latency |
 | Jev allow below `escalateBelow` | downstream `next()` result | `judge` / `uncertain` assessment, then `delegate` / downstream outcome + `uncertain` reason |
-| Anything else (non-bash, unrecoverable command, no key, spent budget, judge fault, internal exception) | downstream `next()` result — with no other answerer mounted, upstream resolves `unavailable` | `delegate` / downstream outcome + reason |
+| Anything else (non-shell, unrecoverable command, no key, spent budget, judge fault, internal exception) | downstream `next()` result — with no other answerer mounted, upstream resolves `unavailable` | `delegate` / downstream outcome + reason |
 
 Fail-closed throughout: the only grant is `allowed-once`, the gate never throws out of the waterfall, the judge is bounded by `timeoutMs`, and a ledger fault can never change an outcome (worst case: a missing line).
 

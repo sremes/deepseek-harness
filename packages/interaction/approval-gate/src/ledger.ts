@@ -29,7 +29,7 @@ export type DecisionLayer = 'blacklist' | 'allowlist' | 'judge' | 'delegate'
 
 /** Why a delegation happened (which fall-through fired). */
 export type DelegateReason =
-  | 'non-bash'
+  | 'non-shell'
   | 'unrecoverable'
   | 'no-key'
   | 'budget-spent'
