@@ -20,7 +20,7 @@ import {
   type PeerScope,
 } from '../src/index.ts'
 import { DEFAULT_MAX_REQUEST_BODY_BYTES } from '../src/http-bridge.ts'
-import { provideBrowserCredentials } from './browser-credentials.ts'
+import { OPERATOR_TOKEN_KEY, browserCredentialsOf, provideBrowserCredentials } from './browser-credentials.ts'
 
 /** Structural webServer fake recording both route registries. */
 function fakeHttpServer(
@@ -204,6 +204,32 @@ describe('connection node half', () => {
       const connection = ctx.get('connection') as HostConnectionHandle
       const cookie = browserCookie(connection, 'localhost')
       expect(connection.admit(fakeRequest({ host: 'localhost', cookie }))).toEqual({ peer: connection.browserPeer })
+    } finally {
+      await fiber.dispose()
+    }
+  })
+
+  it('admits a bearer-token client as its own Peer and refuses anything else', async () => {
+    const ctx = new Context()
+    provideBrowserCredentials(ctx)
+    const store = browserCredentialsOf(ctx)
+    const fiber = ctx.plugin({ inject: [...inject], apply })
+    try {
+      await fiber.await()
+      const connection = ctx.get('connection') as HostConnectionHandle
+      const record = store.recordFor(OPERATOR_TOKEN_KEY)
+      if (record?.kind !== 'grant' || typeof record.payload !== 'object' || record.payload === null) {
+        throw new Error('activation did not mint an operator token')
+      }
+      const token: unknown = Reflect.get(record.payload, 'token')
+      if (typeof token !== 'string') throw new Error('operator token is not a string')
+
+      expect(connection.admit(fakeRequest({ host: 'localhost', authorization: `Bearer ${token}` })))
+        .toEqual({ peer: connection.operatorPeer })
+      // A token client never shares the browser Peer, so its socket cannot displace the page's.
+      expect(connection.operatorPeer).not.toBe(connection.browserPeer)
+      expect(connection.requestRejection(fakeRequest({ host: 'localhost', authorization: 'Bearer wrong' }))).toBe(401)
+      expect(connection.requestRejection(fakeRequest({ host: 'localhost' }))).toBe(401)
     } finally {
       await fiber.dispose()
     }

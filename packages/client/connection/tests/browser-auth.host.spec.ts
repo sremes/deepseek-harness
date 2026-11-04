@@ -6,7 +6,7 @@ import type { CredentialProvider } from '@deepseek-ai/dsh-credentials'
 import type { PeerId } from '@deepseek-ai/dsh-typert-protocol'
 import { BrowserAuth } from '../src/browser-auth.ts'
 import type { ConnectionIndexRequest, ConnectionIndexResponse } from '../src/rpc.ts'
-import { RecordCredentials } from './browser-credentials.ts'
+import { BROWSER_SESSION_KEY, OPERATOR_TOKEN_KEY, RecordCredentials } from './browser-credentials.ts'
 
 function signedCookie(store: RecordCredentials, name: string, payload: unknown): string {
   const body = typeof payload === 'string'
@@ -63,6 +63,7 @@ function createAuth(
 function request(url: string, authority = '127.0.0.1:3080', init?: {
   cookie?: string
   method?: string
+  authorization?: string
 }): ConnectionIndexRequest {
   return {
     method: init?.method ?? 'GET',
@@ -70,8 +71,20 @@ function request(url: string, authority = '127.0.0.1:3080', init?: {
     headers: {
       host: authority,
       ...init?.cookie === undefined ? {} : { cookie: init.cookie },
+      ...init?.authorization === undefined ? {} : { authorization: init.authorization },
     },
   }
+}
+
+/** The durable operational token a Home hands a non-browser client once. */
+function operatorTokenOf(store: RecordCredentials): string {
+  const record = store.recordFor(OPERATOR_TOKEN_KEY)
+  if (record?.kind !== 'grant' || typeof record.payload !== 'object' || record.payload === null) {
+    throw new Error('test credential store has no operator token')
+  }
+  const token: unknown = Reflect.get(record.payload, 'token')
+  if (typeof token !== 'string') throw new Error('test credential record has no string token')
+  return token
 }
 
 function exchange(
@@ -331,20 +344,20 @@ describe('BrowserAuth', () => {
     const store = new RecordCredentials()
     const auth = await createAuth(store)
     const first = exchange(auth)
-    expect(store).toMatchObject({ reads: 0, modifies: 1 })
+    expect(store).toMatchObject({ reads: 0, modifies: 2 })
 
-    await store.deleteRecord()
+    await store.deleteRecord(BROWSER_SESSION_KEY)
     expect(auth.isAuthenticated(request('/', '127.0.0.1:3080', { cookie: first.cookie }))).toBe(true)
     const sameActivation = exchange(auth)
     expect(auth.isAuthenticated(request('/', '127.0.0.1:3080', { cookie: sameActivation.cookie }))).toBe(true)
-    expect(store).toMatchObject({ reads: 0, modifies: 1 })
+    expect(store).toMatchObject({ reads: 0, modifies: 2 })
 
     const reactivated = await createAuth(store)
     const second = exchange(reactivated)
     expect(second.cookie).not.toBe(first.cookie)
     expect(reactivated.isAuthenticated(request('/', '127.0.0.1:3080', { cookie: first.cookie }))).toBe(false)
     expect(reactivated.isAuthenticated(request('/', '127.0.0.1:3080', { cookie: second.cookie }))).toBe(true)
-    expect(store).toMatchObject({ reads: 0, modifies: 2 })
+    expect(store).toMatchObject({ reads: 0, modifies: 4 })
   })
 
   it('fails loud on an invalid owner record instead of replacing it', async () => {
@@ -366,5 +379,84 @@ describe('BrowserAuth', () => {
 
     await expect(createAuth(new RecordCredentials(), Number.MAX_SAFE_INTEGER))
       .rejects.toThrow(/safe timestamp range/u)
+  })
+})
+
+describe('operator bearer token', () => {
+  it('mints one durable token per Home and accepts it without a cookie or a launch URL', async () => {
+    const store = new RecordCredentials()
+    const auth = await createAuth(store)
+    const token = operatorTokenOf(store)
+    const bearer = (scheme: string) => request('/', '127.0.0.1:3080', { authorization: `${scheme}${token}` })
+
+    expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/u)
+    expect(auth.authenticateOperator(bearer('Bearer '))).toBe(true)
+    // HTTP schemes are case-insensitive, and stray padding must not defeat a match.
+    expect(auth.authenticateOperator(bearer('bearer '))).toBe(true)
+    expect(auth.authenticateOperator(bearer('BEARER   ')), 'trailing spaces are tolerated').toBe(true)
+    // Same Home, next activation: the token is loaded, not rotated.
+    const reloaded = await createAuth(store)
+    expect(reloaded.authenticateOperator(bearer('Bearer '))).toBe(true)
+    expect(operatorTokenOf(store)).toBe(token)
+  })
+
+  it('survives a browser-secret rotation, which is the point of a separate record', async () => {
+    const store = new RecordCredentials()
+    const auth = await createAuth(store)
+    const token = operatorTokenOf(store)
+    const cookie = exchange(auth).cookie
+
+    await store.deleteRecord(BROWSER_SESSION_KEY)
+    const rotated = await createAuth(store)
+
+    expect(rotated.authenticateOperator(request('/', '127.0.0.1:3080', { authorization: `Bearer ${token}` }))).toBe(true)
+    expect(rotated.isAuthenticated(request('/', '127.0.0.1:3080', { cookie }))).toBe(false)
+  })
+
+  it('rejects a missing, malformed, wrong-scheme, or foreign token', async () => {
+    const store = new RecordCredentials()
+    const auth = await createAuth(store)
+    const token = operatorTokenOf(store)
+    const otherStore = new RecordCredentials()
+    await createAuth(otherStore)
+    const foreign = operatorTokenOf(otherStore)
+    const bearer = (value: string) => request('/', '127.0.0.1:3080', { authorization: value })
+
+    expect(auth.authenticateOperator(request('/', '127.0.0.1:3080'))).toBe(false)
+    expect(auth.authenticateOperator(bearer(token)), 'no scheme means no credential').toBe(false)
+    expect(auth.authenticateOperator(bearer(`Basic ${token}`))).toBe(false)
+    expect(auth.authenticateOperator(bearer('Bearer '))).toBe(false)
+    expect(auth.authenticateOperator(bearer(`Bearer ${token}x`))).toBe(false)
+    // Flip one interior character, so the substitution can never coincide with the original.
+    expect(auth.authenticateOperator(bearer(`Bearer ${token.slice(0, 10)}${token[10] === 'A' ? 'B' : 'A'}${token.slice(11)}`)))
+      .toBe(false)
+    expect(auth.authenticateOperator(bearer(`Bearer ${foreign}`)), 'another Home cannot lend its token').toBe(false)
+  })
+
+  it('keeps a bearer header out of the browser identities it does not belong to', async () => {
+    const store = new RecordCredentials()
+    const auth = await createAuth(store)
+    const token = operatorTokenOf(store)
+    const bearer = request('/', '127.0.0.1:3080', { authorization: `Bearer ${token}` })
+
+    // A token request is not a browser session: the index path still demands a cookie,
+    // and no API operator id may be minted from it.
+    expect(auth.isAuthenticated(bearer)).toBe(false)
+    expect(auth.authenticateApi(bearer)).toBeUndefined()
+    const res = response()
+    expect(auth.authorizeIndex(bearer, res.value)).toBe(false)
+    expect(res.state.status).toBe(401)
+  })
+
+  it('fails loud on an untrustworthy token record instead of minting a replacement', async () => {
+    const malformed = new RecordCredentials()
+    await malformed.modifyRecord(OPERATOR_TOKEN_KEY, () =>
+      Promise.resolve({ kind: 'grant', payload: { version: 1, token: 'short' } }))
+    await expect(createAuth(malformed)).rejects.toThrow(/invalid token/u)
+
+    const unsupported = new RecordCredentials()
+    await unsupported.modifyRecord(OPERATOR_TOKEN_KEY, () =>
+      Promise.resolve({ kind: 'api-key', key: 'not-a-token' }))
+    await expect(createAuth(unsupported)).rejects.toThrow(/unsupported format/u)
   })
 })

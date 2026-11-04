@@ -210,6 +210,8 @@ export interface HostConnectionHandle {
   readonly fetch: HostConnectionFetch
   /** The owner Peer every authenticated browser connection shares. */
   readonly browserPeer: PeerScope
+  /** The Peer a bearer-token client acts as; distinct from the browser's, so neither displaces the other. */
+  readonly operatorPeer: PeerScope
 
   /**
    * Whether this deployment accepts authorities beyond loopback: true only

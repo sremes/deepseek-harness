@@ -12,18 +12,26 @@ import type {
 } from './rpc.ts'
 
 const AUTH_RECORD_KEY = credentialKey('client-connection', 'browser-session')
+const OPERATOR_TOKEN_KEY = credentialKey('client-connection', 'operator-token')
 const DAY_MILLISECONDS = 24 * 60 * 60 * 1000
 const SECRET_BYTES = 32
 const TOKEN_QUERY = 'token'
+const BEARER_PREFIX = 'bearer '
 const COOKIE_PREFIX = 'dsh-auth-'
 const COOKIE_PAYLOAD_VERSION = 1
 const STORED_SECRET_VERSION = 1
+const STORED_OPERATOR_TOKEN_VERSION = 1
 const BASE64URL_PATTERN = /^[A-Za-z0-9_-]*$/
 const PROCESS_LAUNCH_TOKENS = new WeakMap<object, string>()
 
 interface StoredSecretPayload {
   readonly version: typeof STORED_SECRET_VERSION
   readonly secret: string
+}
+
+interface StoredOperatorTokenPayload {
+  readonly version: typeof STORED_OPERATOR_TOKEN_VERSION
+  readonly token: string
 }
 
 interface BrowserCookiePayload {
@@ -198,10 +206,53 @@ async function initializeSecret(credentials: CredentialProvider): Promise<Buffer
   return secret
 }
 
+function storedOperatorToken(record: CredentialRecord | undefined): string | undefined {
+  if (record === undefined) return undefined
+  if (record.kind !== 'grant' || !isRecord(record.payload)
+    || record.payload.version !== STORED_OPERATOR_TOKEN_VERSION) {
+    throw new Error('client-connection: operator-token credential record has an unsupported format')
+  }
+  const token = record.payload.token
+  if (typeof token !== 'string' || canonicalSecret(token) === undefined) {
+    throw new Error('client-connection: operator-token credential record has an invalid token')
+  }
+  return token
+}
+
 /**
- * Process launch-token exchange and persistent signed-cookie verification.
- * Connection loads the credential provider's signing secret during activation
- * and retains it for synchronous request authentication.
+ * Create this Harness home's durable operator token, or read the one it already holds.
+ *
+ * The token outlives the process on purpose: a non-browser client that has been
+ * given it once keeps working across restarts, which an ephemeral launch token
+ * cannot do. It is a bearer secret, so it is compared in constant time and never
+ * echoed back by a response.
+ * @param credentials - persistent credential provider for the Web profile.
+ * @returns the stored bearer token, base64url.
+ */
+async function initializeOperatorToken(credentials: CredentialProvider): Promise<string> {
+  const generated: StoredOperatorTokenPayload = {
+    version: STORED_OPERATOR_TOKEN_VERSION,
+    token: encodeBase64Url(randomBytes(SECRET_BYTES)),
+  }
+  const record = await credentials.modifyRecord(OPERATOR_TOKEN_KEY, (current) => {
+    if (current !== undefined) {
+      storedOperatorToken(current)
+      return Promise.resolve(undefined)
+    }
+    return Promise.resolve({ kind: 'grant', payload: generated })
+  })
+  const token = storedOperatorToken(record)
+  if (token === undefined) {
+    throw new Error('client-connection: operator-token credential record was not created')
+  }
+  return token
+}
+
+/**
+ * Process launch-token exchange, persistent signed-cookie verification, and the
+ * durable operator bearer token that non-browser clients present instead.
+ * Connection loads the credential provider's signing secret and operator token
+ * during activation and retains both for synchronous request authentication.
  */
 export class BrowserAuth {
   private readonly launchToken: string
@@ -210,6 +261,7 @@ export class BrowserAuth {
   private constructor(
     processOwner: object,
     private readonly secret: Buffer,
+    private readonly operatorToken: string,
     maxAgeDays: number,
   ) {
     this.launchToken = processLaunchToken(processOwner)
@@ -233,7 +285,8 @@ export class BrowserAuth {
     credentials: CredentialProvider,
     maxAgeDays: number,
   ): Promise<BrowserAuth> {
-    return new BrowserAuth(processOwner, await initializeSecret(credentials), maxAgeDays)
+    const secret = await initializeSecret(credentials)
+    return new BrowserAuth(processOwner, secret, await initializeOperatorToken(credentials), maxAgeDays)
   }
 
   /**
@@ -345,6 +398,25 @@ export class BrowserAuth {
       ),
     })
     res.end()
+  }
+
+  /**
+   * Verify an operator bearer token on a Host request.
+   *
+   * This is the non-browser door into the same transport: it carries no Host
+   * binding and no expiry, so it cannot stand in for a cookie and is checked
+   * separately, ahead of the cookie branch by the caller. A bearer client is a
+   * durable peer, not a browser session — the token is created once per Harness
+   * home and survives restarts, which is exactly why it must never be logged or
+   * returned by a response.
+   * @param request - request headers carrying Authorization.
+   * @returns true only for a bearer header matching this home's stored operator token.
+   */
+  authenticateOperator(request: ConnectionTrustRequest): boolean {
+    const value = header(request.headers, 'authorization')
+    if (value === undefined) return false
+    if (value.slice(0, BEARER_PREFIX.length).toLowerCase() !== BEARER_PREFIX) return false
+    return tokenMatches(value.slice(BEARER_PREFIX.length).trim(), this.operatorToken)
   }
 
   /**

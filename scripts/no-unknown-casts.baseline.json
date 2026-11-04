@@ -397,9 +397,6 @@
     "c80c8a70cdf0ad954bb3634bf6528ba6a53011dbc8b75963d51d5c0a11f1b4a8": 1,
     "e7f95519c09637d531267d47a19e5bf22918c85ea350dc337c965f5904c1d1bb": 1
   },
-  "packages/client/connection/tests/node-half.host.spec.ts": {
-    "b7bfb7092ddbfc55e0b0dcf4bf9f0237ce0257e818da21b0141f7a1561fa61fd": 1
-  },
   "packages/client/file-upload/tests/file-upload-http.host.spec.ts": {
     "12a2d457945d43a02ab415318a8f6744ef620abd1fe272e12a164fa4ff476289": 1,
     "37d0e226122b7a3a4253e22583da5c77cc3690554dc959c74bf570589f3224fd": 1

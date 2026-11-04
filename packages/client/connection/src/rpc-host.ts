@@ -70,6 +70,8 @@ declare module '@deepseek-ai/cordis' {
 export class HostConnectionService extends Service implements HostConnectionHandle {
   /** The Peer every authenticated browser connection shares. */
   readonly browserPeer: PeerScope
+  /** The Peer a bearer-token client acts as; distinct from the browser's, so neither displaces the other. */
+  readonly operatorPeer: PeerScope
   private readonly peers = new Map<PeerId, PeerRecord>()
   private readonly owner: Context
   private disposed = false
@@ -92,9 +94,14 @@ export class HostConnectionService extends Service implements HostConnectionHand
     super(ctx, 'connection')
     this.owner = ctx
     this.browserPeer = new Peer(ctx, { principal: { kind: 'owner' } })
+    // A token client has no human behind it, so it declares no approval channel:
+    // an ask it cannot answer must fail closed rather than wait for a browser
+    // that may not be attached.
+    this.operatorPeer = new Peer(ctx, { principal: { kind: 'owner' }, interactions: 'none' })
     ctx.effect(() => async () => {
       this.disposed = true
-      const peers = [this.browserPeer, ...Array.from(this.peers.values(), record => record.peer)]
+      const peers = [this.browserPeer, this.operatorPeer,
+        ...Array.from(this.peers.values(), record => record.peer)]
       this.peers.clear()
       await Promise.all(peers.map(peer => peer.dispose()))
     }, 'client-connection: Peer scopes')
@@ -125,11 +132,15 @@ export class HostConnectionService extends Service implements HostConnectionHand
     return 'rejection' in admission ? admission.rejection : undefined
   }
 
-  /** Browser requests share an owner Peer; API HTTP does not depend on an attached socket. */
+  /** Browser requests share an owner Peer; token clients get their own; API HTTP needs no attached socket. */
   admit(request: ConnectionTrustRequest): PeerAdmission {
     if (!this.isTrusted(request)) return { rejection: 403 }
     if (this.disposed) return { rejection: 401 }
     const secure = this.owner.get('webServer')?.protocol === 'https:'
+    // Ahead of the cookie branch: a bearer client presents no cookie and no Host
+    // binding, and its token is the only credential it has. Checking it first
+    // also keeps a bearer request from being judged by cookie expiry.
+    if (this.browserAuth.authenticateOperator(request)) return { peer: this.operatorPeer }
     if (this.browserAuth.isAuthenticated(request, secure)) return { peer: this.browserPeer }
     const id = this.browserAuth.authenticateApi(request, secure)
     const record = id === undefined ? undefined : this.peers.get(id)
